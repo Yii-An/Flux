@@ -1,0 +1,85 @@
+/* General */
+"app.name" = "Flux";
+
+/* Menu Bar */
+"menu.open_panel" = "Open Panel";
+"menu.quit" = "Quit";
+
+/* Sidebar */
+"sidebar.overview" = "Overview";
+"sidebar.providers" = "Providers";
+"sidebar.agents" = "Agent Config";
+"sidebar.settings" = "Settings";
+"sidebar.logs" = "Logs";
+
+/* Overview */
+"overview.title" = "Overview";
+"overview.running_status" = "Running Status";
+"overview.health_status" = "Health Status";
+"overview.provider_count" = "Provider Count";
+"overview.quick_actions" = "Quick Actions";
+"overview.port_config" = "Port Configuration";
+"overview.process_info" = "Process Info";
+"overview.proxy_port" = "Proxy Port";
+"overview.management_port" = "Management Port";
+
+/* Status */
+"status.running" = "Running";
+"status.stopped" = "Stopped";
+"status.starting" = "Starting...";
+"status.stopping" = "Stopping...";
+"status.failed" = "Failed";
+"status.healthy" = "Healthy";
+"status.offline" = "Offline";
+"status.unknown" = "Unknown";
+"status.connected" = "Connected";
+"status.checking" = "Checking...";
+
+/* Actions */
+"action.start" = "Start";
+"action.stop" = "Stop";
+"action.restart" = "Restart";
+"action.refresh" = "Refresh";
+"action.clear" = "Clear";
+"action.save" = "Save";
+"action.cancel" = "Cancel";
+"action.delete" = "Delete";
+"action.add" = "Add";
+
+/* Settings */
+"settings.title" = "Settings";
+"settings.binary_path" = "CLIProxyAPI Binary Path";
+"settings.config_path" = "Config File Path";
+"settings.proxy_port" = "Proxy Port";
+"settings.management_port" = "Management Port";
+"settings.auto_discover" = "Auto Discover";
+"settings.download" = "Download";
+
+/* Logs */
+"logs.title" = "Logs";
+"logs.auto_scroll" = "Auto Scroll";
+"logs.empty" = "No logs";
+"logs.empty_hint" = "Logs will appear here after starting CLIProxyAPI";
+"logs.line_count" = "%d lines";
+
+/* Providers */
+"providers.title" = "Providers";
+"providers.health" = "Health";
+"providers.accounts" = "Accounts";
+"providers.add_account" = "Add Account";
+"providers.no_accounts" = "No accounts configured";
+"providers.strategy" = "Strategy";
+
+/* Notifications */
+"notification.process_started" = "CLIProxyAPI Started";
+"notification.process_started_body" = "Service is running on port %d";
+"notification.process_stopped" = "CLIProxyAPI Stopped";
+"notification.process_stopped_body" = "Proxy service has stopped";
+"notification.process_failed" = "CLIProxyAPI Failed";
+"notification.health_failed" = "Health Check Failed";
+"notification.health_failed_body" = "Cannot connect to CLIProxyAPI management interface";
+
+/* Errors */
+"error.binary_not_executable" = "Binary not executable";
+"error.invalid_port" = "Invalid port";
+"error.connection_failed" = "Connection failed";

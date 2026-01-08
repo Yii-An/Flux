@@ -1,0 +1,85 @@
+/* General */
+"app.name" = "Flux";
+
+/* Menu Bar */
+"menu.open_panel" = "打开面板";
+"menu.quit" = "退出";
+
+/* Sidebar */
+"sidebar.overview" = "概览";
+"sidebar.providers" = "Provider";
+"sidebar.agents" = "Agent 配置";
+"sidebar.settings" = "设置";
+"sidebar.logs" = "日志";
+
+/* Overview */
+"overview.title" = "概览";
+"overview.running_status" = "运行状态";
+"overview.health_status" = "连接状态";
+"overview.provider_count" = "Provider 数量";
+"overview.quick_actions" = "快捷操作";
+"overview.port_config" = "端口配置";
+"overview.process_info" = "进程信息";
+"overview.proxy_port" = "代理端口";
+"overview.management_port" = "管理端口";
+
+/* Status */
+"status.running" = "运行中";
+"status.stopped" = "已停止";
+"status.starting" = "启动中...";
+"status.stopping" = "停止中...";
+"status.failed" = "失败";
+"status.healthy" = "健康";
+"status.offline" = "离线";
+"status.unknown" = "未知";
+"status.connected" = "已连接";
+"status.checking" = "检测中...";
+
+/* Actions */
+"action.start" = "启动";
+"action.stop" = "停止";
+"action.restart" = "重启";
+"action.refresh" = "刷新";
+"action.clear" = "清空";
+"action.save" = "保存";
+"action.cancel" = "取消";
+"action.delete" = "删除";
+"action.add" = "添加";
+
+/* Settings */
+"settings.title" = "设置";
+"settings.binary_path" = "CLIProxyAPI 二进制路径";
+"settings.config_path" = "配置文件路径";
+"settings.proxy_port" = "代理端口";
+"settings.management_port" = "管理端口";
+"settings.auto_discover" = "自动发现";
+"settings.download" = "下载";
+
+/* Logs */
+"logs.title" = "日志";
+"logs.auto_scroll" = "自动滚动";
+"logs.empty" = "暂无日志";
+"logs.empty_hint" = "启动 CLIProxyAPI 后将在此显示日志";
+"logs.line_count" = "%d 行";
+
+/* Providers */
+"providers.title" = "Provider";
+"providers.health" = "健康状态";
+"providers.accounts" = "账号";
+"providers.add_account" = "添加账号";
+"providers.no_accounts" = "暂无账号配置";
+"providers.strategy" = "策略";
+
+/* Notifications */
+"notification.process_started" = "CLIProxyAPI 已启动";
+"notification.process_started_body" = "服务正在端口 %d 上运行";
+"notification.process_stopped" = "CLIProxyAPI 已停止";
+"notification.process_stopped_body" = "代理服务已停止运行";
+"notification.process_failed" = "CLIProxyAPI 启动失败";
+"notification.health_failed" = "健康检查失败";
+"notification.health_failed_body" = "无法连接到 CLIProxyAPI 管理接口";
+
+/* Errors */
+"error.binary_not_executable" = "二进制文件不可执行";
+"error.invalid_port" = "端口无效";
+"error.connection_failed" = "连接失败";
