@@ -10,6 +10,10 @@ xcuserdata/
 build/
 DerivedData/
 
+# Generated
+Flux.xcodeproj/
+.sisyphus/
+
 # Dependencies
 Pods/
 Carthage/
@@ -36,3 +40,5 @@ Carthage/
 plan_log.md
 state.json
 todo.md
+
+external/
