@@ -4,48 +4,65 @@ struct QuotaView: View {
     @State private var viewModel = QuotaViewModel()
     @State private var selectedProvider: ProviderID = .claude
     @State private var isSpinningRefresh = false
+    @State private var isProgrammaticScroll = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            TopHeader(
-                selectedProvider: $selectedProvider,
-                providers: sortedProviders(),
-                countsByProvider: countsByProvider,
-                summary: quotaSummary,
-                lastRefreshAt: viewModel.lastRefreshAt
-            )
+        ScrollViewReader { proxy in
+            VStack(spacing: 0) {
+                QuotaAnchorTabBar(
+                    selected: $selectedProvider,
+                    providers: providers,
+                    badges: tabBadges,
+                    onSelect: { provider in
+                        isProgrammaticScroll = true
+                        withAnimation(UITokens.Animation.transition) {
+                            selectedProvider = provider
+                            proxy.scrollTo(provider, anchor: .top)
+                        }
+                        Task {
+                            try? await Task.sleep(nanoseconds: 350_000_000)
+                            isProgrammaticScroll = false
+                        }
+                    }
+                )
 
-            ScrollViewReader { proxy in
                 ScrollView(.vertical) {
-                    VStack(alignment: .leading, spacing: UITokens.Spacing.md) {
-                        let providers = sortedProviders()
-
-                        if providers.isEmpty {
-                            ContentUnavailableView {
-                                Label("No Providers".localizedStatic(), systemImage: "bolt.horizontal")
-                            } description: {
-                                Text("No quota providers available.".localizedStatic())
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, UITokens.Spacing.lg)
+                    LazyVStack(alignment: .leading, spacing: UITokens.Spacing.md, pinnedViews: [.sectionHeaders]) {
+                        if hasAnyAccounts == false {
+                            QuotaEmptyState()
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, UITokens.Spacing.lg)
                         } else {
                             ForEach(providers, id: \.self) { provider in
-                                ProviderQuotaCard(
-                                    provider: provider,
-                                    snapshot: viewModel.snapshots[provider],
-                                    providerSnapshot: viewModel.providerSnapshots[provider]
-                                )
-                                .id(provider)
+                                Section {
+                                    ProviderSectionContent(
+                                        provider: provider,
+                                        providerSnapshot: viewModel.providerSnapshots[provider],
+                                        onRefresh: {
+                                            Task { await viewModel.refreshAll() }
+                                        }
+                                    )
+                                } header: {
+                                    ProviderSectionHeader(
+                                        provider: provider,
+                                        providerSnapshot: viewModel.providerSnapshots[provider],
+                                        snapshot: viewModel.snapshots[provider]
+                                    )
+                                    .id(provider)
+                                    .background(ProviderHeaderOffsetReader(provider: provider))
+                                }
                             }
                         }
                     }
                     .padding(UITokens.Spacing.md)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .onChange(of: selectedProvider) { _, newValue in
-                    withAnimation(UITokens.Animation.transition) {
-                        proxy.scrollTo(newValue, anchor: .top)
-                    }
+                .coordinateSpace(name: ProviderHeaderOffsetReader.coordinateSpaceName)
+                .onPreferenceChange(ProviderHeaderOffsetKey.self) { offsets in
+                    guard isProgrammaticScroll == false else { return }
+                    guard let next = ProviderHeaderOffsetReader.closestToTop(offsets: offsets, providers: providers) else { return }
+                    guard next != selectedProvider else { return }
+                    selectedProvider = next
                 }
             }
         }
@@ -53,10 +70,7 @@ struct QuotaView: View {
             await viewModel.loadCached()
             await viewModel.refreshAll()
 
-            let providers = sortedProviders()
-            if providers.contains(selectedProvider) == false {
-                selectedProvider = providers.first ?? .claude
-            }
+            if providers.contains(selectedProvider) == false { selectedProvider = providers.first ?? .claude }
         }
         .onChange(of: viewModel.isRefreshing) { _, newValue in
             if newValue {
@@ -81,6 +95,10 @@ struct QuotaView: View {
         .animation(UITokens.Animation.transition, value: viewModel.lastRefreshAt)
     }
 
+    private var providers: [ProviderID] {
+        sortedProviders()
+    }
+
     private func sortedProviders() -> [ProviderID] {
         let supported = ProviderID.allCases.filter(\.descriptor.supportsQuota)
         return supported.sorted { lhs, rhs in
@@ -96,211 +114,83 @@ struct QuotaView: View {
         }
     }
 
-    private var countsByProvider: [ProviderID: Int] {
-        Dictionary(uniqueKeysWithValues: sortedProviders().map { provider in
-            let count = viewModel.providerSnapshots[provider]?.accounts.count ?? 0
-            return (provider, count)
-        })
+    private var hasAnyAccounts: Bool {
+        providers.contains { provider in
+            (viewModel.providerSnapshots[provider]?.accounts.isEmpty == false)
+        }
     }
-
-    private var quotaSummary: QuotaSummary {
-        var total = 0
-        var ok = 0
-        var warn = 0
-        var error = 0
-
-        for provider in ProviderID.allCases where provider.descriptor.supportsQuota {
-            guard let accounts = viewModel.providerSnapshots[provider]?.accounts.values else { continue }
-            for account in accounts {
-                total += 1
+    private var tabBadges: [ProviderID: QuotaTabBadge] {
+        Dictionary(uniqueKeysWithValues: providers.map { provider in
+            let accountsDict = viewModel.providerSnapshots[provider]?.accounts ?? [:]
+            let accounts = Array(accountsDict.values)
+            let count = accounts.count
+            let hasIssues = accounts.contains { account in
                 switch account.kind {
-                case .ok:
-                    ok += 1
-                case .error:
-                    error += 1
-                case .authMissing, .unsupported, .loading:
-                    warn += 1
+                case .ok, .loading:
+                    return false
+                case .authMissing, .unsupported, .error:
+                    return true
                 }
             }
-        }
-
-        return QuotaSummary(total: total, ok: ok, warn: warn, error: error)
+            return (provider, QuotaTabBadge(count: count, hasIssues: hasIssues))
+        })
     }
 }
 
-private struct QuotaSummary: Hashable, Sendable {
-    let total: Int
-    let ok: Int
-    let warn: Int
-    let error: Int
+private struct QuotaTabBadge: Hashable, Sendable {
+    let count: Int
+    let hasIssues: Bool
 }
 
-private struct TopHeader: View {
-    @Binding var selectedProvider: ProviderID
+private struct QuotaAnchorTabBar: View {
+    @Binding var selected: ProviderID
     let providers: [ProviderID]
-    let countsByProvider: [ProviderID: Int]
-    let summary: QuotaSummary
-    let lastRefreshAt: Date?
+    let badges: [ProviderID: QuotaTabBadge]
+    let onSelect: (ProviderID) -> Void
 
     var body: some View {
-        VStack(spacing: UITokens.Spacing.sm) {
-            QuotaSegmentedTabBar(
-                selected: $selectedProvider,
-                providers: providers,
-                countsByProvider: countsByProvider,
-                lastRefreshAt: lastRefreshAt
-            )
-
-            QuotaSummaryBar(summary: summary)
-        }
-        .padding(.horizontal, UITokens.Spacing.md)
-        .padding(.top, UITokens.Spacing.sm)
-        .padding(.bottom, UITokens.Spacing.md)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .bottom) {
-            Divider()
-        }
-    }
-}
-
-private struct QuotaSummaryBar: View {
-    let summary: QuotaSummary
-
-    var body: some View {
-        HStack(spacing: UITokens.Spacing.md) {
-            SummaryChip(icon: "person.2.fill", title: "Accounts".localizedStatic(), value: summary.total, tint: .blue)
-            SummaryChip(icon: "checkmark.circle.fill", title: "OK".localizedStatic(), value: summary.ok, tint: .green)
-            SummaryChip(icon: "exclamationmark.triangle.fill", title: "Warn".localizedStatic(), value: summary.warn, tint: .orange)
-            SummaryChip(icon: "xmark.octagon.fill", title: "Error".localizedStatic(), value: summary.error, tint: .red)
+        HStack(spacing: 10) {
+            ForEach(providers, id: \.self) { provider in
+                QuotaAnchorPill(
+                    provider: provider,
+                    badge: badges[provider] ?? QuotaTabBadge(count: 0, hasIssues: false),
+                    isSelected: selected == provider
+                ) {
+                    onSelect(provider)
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, UITokens.Spacing.md)
         .padding(.vertical, UITokens.Spacing.sm)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color.primary.opacity(0.06),
-                    Color.primary.opacity(0.02),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            ),
-            in: RoundedRectangle(cornerRadius: UITokens.Radius.medium)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: UITokens.Radius.medium)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
+        .background(.regularMaterial)
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
-private struct SummaryChip: View {
-    let icon: String
-    let title: String
-    let value: Int
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.caption)
-                .foregroundStyle(tint)
-
-            Text("\(value)")
-                .font(.dinBold(size: 14))
-                .foregroundStyle(.primary)
-                .monospacedDigit()
-
-            Text(title)
-                .font(.system(.caption, design: .rounded))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
-    }
-}
-
-private struct QuotaSegmentedTabBar: View {
-    @Binding var selected: ProviderID
-    let providers: [ProviderID]
-    let countsByProvider: [ProviderID: Int]
-    let lastRefreshAt: Date?
-
-    var body: some View {
-        HStack(spacing: UITokens.Spacing.md) {
-            HStack(spacing: 0) {
-                ForEach(providers, id: \.self) { provider in
-                    QuotaSegmentItem(
-                        provider: provider,
-                        count: countsByProvider[provider] ?? 0,
-                        isSelected: selected == provider
-                    ) {
-                        withAnimation(UITokens.Animation.transition) {
-                            selected = provider
-                        }
-                    }
-                }
-            }
-            .padding(4)
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(
-                Capsule()
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            )
-
-            Spacer(minLength: 0)
-
-            if let lastRefreshAt {
-                Text(Self.formatTime(lastRefreshAt))
-                    .font(.dinNumber(.caption))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            } else {
-                Text("—")
-                    .font(.dinNumber(.caption))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private static func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
-}
-
-private struct QuotaSegmentItem: View {
+private struct QuotaAnchorPill: View {
     let provider: ProviderID
-    let count: Int
+    let badge: QuotaTabBadge
     let isSelected: Bool
-    let onSelect: () -> Void
+    let onTap: () -> Void
 
     @State private var isHovering = false
 
     var body: some View {
-        Button(action: onSelect) {
+        Button(action: onTap) {
             HStack(spacing: 8) {
-                ProviderIcon(provider, size: 16)
+                ProviderIcon(provider, size: 18)
+                    .opacity(isSelected ? 1 : 0.65)
 
                 Text(provider.displayName)
                     .font(.system(.caption, design: .rounded))
-                    .fontWeight(.medium)
-                    .foregroundStyle(isSelected ? .primary : .secondary)
+                    .fontWeight(.semibold)
+                    .foregroundStyle(isSelected ? provider.tintColor : .secondary)
 
-                ZStack {
-                    Circle()
-                        .fill(Color.secondary.opacity(0.18))
-                        .frame(width: 16, height: 16)
-                    Text("\(count)")
-                        .font(.system(size: 10, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
+                badgeDot(count: badge.count)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 7)
-            .frame(minHeight: 30)
-            .frame(maxWidth: .infinity)
             .background(background)
             .overlay(overlay)
             .contentShape(Capsule())
@@ -311,12 +201,30 @@ private struct QuotaSegmentItem: View {
                 isHovering = hovering
             }
         }
-        .help(provider.displayName)
+        .overlay(alignment: .topTrailing) {
+            if badge.hasIssues {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 7, height: 7)
+                    .offset(x: 2, y: -2)
+            }
+        }
+    }
+
+    private func badgeDot(count: Int) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.secondary.opacity(0.18))
+                .frame(width: 16, height: 16)
+            Text("\(count)")
+                .font(.dinBold(size: 10))
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var background: some ShapeStyle {
         if isSelected {
-            return provider.tintColor.opacity(0.22)
+            return provider.tintColor.opacity(0.14)
         }
         if isHovering {
             return Color.primary.opacity(0.05)
@@ -326,110 +234,135 @@ private struct QuotaSegmentItem: View {
 
     private var overlay: some View {
         Capsule()
-            .strokeBorder(isSelected ? provider.tintColor.opacity(0.35) : Color.clear, lineWidth: 1)
+            .strokeBorder(isSelected ? provider.tintColor.opacity(0.25) : Color.primary.opacity(0.08), lineWidth: 1)
     }
 }
 
-private struct ProviderQuotaCard: View {
-    let provider: ProviderID
-    let snapshot: QuotaSnapshot?
-    let providerSnapshot: ProviderQuotaSnapshot?
+private struct ProviderHeaderOffsetKey: PreferenceKey {
+    static let defaultValue: [ProviderID: CGFloat] = [:]
 
-    @State private var isHovering = false
+    static func reduce(value: inout [ProviderID: CGFloat], nextValue: () -> [ProviderID: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+private struct ProviderHeaderOffsetReader: View {
+    static let coordinateSpaceName = "quotaScroll"
+
+    let provider: ProviderID
 
     var body: some View {
-        VStack(alignment: .leading, spacing: UITokens.Spacing.md) {
-            header
-
-            if let accounts = sortedAccounts, accounts.isEmpty == false {
-                VStack(alignment: .leading, spacing: UITokens.Spacing.sm) {
-                    ForEach(accounts) { account in
-                        AccountQuotaCard(provider: provider, account: account)
-                    }
-                }
-            } else {
-                ContentUnavailableView {
-                    Label("No Accounts".localizedStatic(), systemImage: "person.crop.circle.badge.exclamationmark")
-                } description: {
-                    Text("Add OAuth files under ~/.cli-proxy-api to see quota.".localizedStatic())
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, UITokens.Spacing.sm)
-            }
+        GeometryReader { proxy in
+            Color.clear
+                .preference(
+                    key: ProviderHeaderOffsetKey.self,
+                    value: [provider: proxy.frame(in: .named(Self.coordinateSpaceName)).minY]
+                )
         }
-        .padding(UITokens.Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: UITokens.Radius.large))
-        .overlay(tintOverlay)
-        .overlay(
-            RoundedRectangle(cornerRadius: UITokens.Radius.large)
-                .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
-        )
-        .shadow(color: Color.black.opacity(isHovering ? 0.10 : 0), radius: 8, x: 0, y: 4)
-        .onHover { hovering in
-            withAnimation(UITokens.Animation.hover) {
-                isHovering = hovering
-            }
-        }
+        .frame(height: 0)
     }
 
-    private var kind: QuotaSnapshotKind {
-        snapshot?.kind ?? .loading
-    }
-
-    private var statusText: String {
-        switch kind {
-        case .ok: "OK".localizedStatic()
-        case .authMissing: "Auth missing".localizedStatic()
-        case .unsupported: "Unsupported".localizedStatic()
-        case .error: "Error".localizedStatic()
-        case .loading: "Loading".localizedStatic()
+    static func closestToTop(offsets: [ProviderID: CGFloat], providers: [ProviderID]) -> ProviderID? {
+        let pairs = providers.compactMap { provider -> (ProviderID, CGFloat)? in
+            guard let value = offsets[provider] else { return nil }
+            return (provider, value)
         }
+        return pairs.min(by: { abs($0.1) < abs($1.1) })?.0
     }
+}
 
-    private var statusType: StatusType {
-        switch kind {
-        case .ok:
-            return .success
-        case .authMissing:
-            return .warning
-        case .unsupported:
-            return .neutral
-        case .error:
-            return .error
-        case .loading:
-            return .neutral
-        }
-    }
+private struct ProviderSectionHeader: View {
+    let provider: ProviderID
+    let providerSnapshot: ProviderQuotaSnapshot?
+    let snapshot: QuotaSnapshot?
 
-    private var header: some View {
-        HStack(spacing: UITokens.Spacing.sm) {
+    var body: some View {
+        HStack(spacing: UITokens.Spacing.md) {
             ProviderIcon(provider, size: 32)
 
             Text(provider.displayName)
-                .font(.headline)
+                .font(.system(.title2, design: .rounded))
+                .fontWeight(.bold)
 
-            Spacer()
+            Spacer(minLength: 0)
 
-            Text("\(providerSnapshot?.accounts.count ?? 0)")
-                .font(.dinBold(size: 14))
-                .foregroundStyle(.secondary)
+            ProviderHeaderBadge(provider: provider, stats: stats)
+        }
+        .padding(.horizontal, UITokens.Spacing.md)
+        .padding(.vertical, UITokens.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.bar)
+    }
 
-            Circle()
-                .fill(providerStatusColor)
-                .frame(width: 8, height: 8)
+    private var stats: ProviderStats {
+        let accounts = Array((providerSnapshot?.accounts ?? [:]).values)
+        let active = accounts.filter { $0.kind == .ok }.count
+        let warn = accounts.filter { $0.kind != .ok && $0.kind != .error && $0.kind != .loading }.count
+        let err = accounts.filter { $0.kind == .error }.count
+        let fallbackKind = snapshot?.kind ?? .loading
+        return ProviderStats(active: active, warn: warn, error: err, fallbackKind: fallbackKind)
+    }
+}
 
-            StatusBadge(text: statusText, status: statusType)
+private struct ProviderStats: Hashable, Sendable {
+    let active: Int
+    let warn: Int
+    let error: Int
+    let fallbackKind: QuotaSnapshotKind
+}
+
+private struct ProviderHeaderBadge: View {
+    let provider: ProviderID
+    let stats: ProviderStats
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if stats.active == 0, stats.warn == 0, stats.error == 0 {
+                Text("No Accounts".localizedStatic())
+                    .font(.system(.caption, design: .rounded))
+                    .fontWeight(.medium)
+            } else {
+                badgePiece(value: stats.active, label: "Active".localizedStatic())
+
+                if stats.warn > 0 {
+                    separatorDot
+                    badgePiece(value: stats.warn, label: "Warning".localizedStatic())
+                }
+
+                if stats.error > 0 {
+                    separatorDot
+                    badgePiece(value: stats.error, label: "Error".localizedStatic())
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Capsule().fill(badgeColor.opacity(0.15)))
+        .foregroundStyle(badgeColor)
+    }
+
+    private func badgePiece(value: Int, label: String) -> some View {
+        HStack(spacing: 4) {
+            Text("\(value)")
+                .font(.dinNumber(.caption))
+                .monospacedDigit()
+            Text(label)
+                .font(.system(.caption, design: .rounded))
+                .fontWeight(.medium)
         }
     }
 
-    private var providerStatusColor: Color {
-        if let accounts = providerSnapshot?.accounts.values, accounts.isEmpty == false {
-            if accounts.contains(where: { $0.kind == .error }) { return .red }
-            if accounts.contains(where: { $0.kind != .ok }) { return .orange }
-            return .green
-        }
-        switch kind {
+    private var separatorDot: some View {
+        Text("·")
+            .font(.system(.caption, design: .rounded))
+            .foregroundStyle(.tertiary)
+    }
+
+    private var badgeColor: Color {
+        if stats.error > 0 { return .red }
+        if stats.warn > 0 { return .orange }
+        if stats.active > 0 { return .green }
+        switch stats.fallbackKind {
         case .error:
             return .red
         case .authMissing:
@@ -440,80 +373,85 @@ private struct ProviderQuotaCard: View {
             return .secondary
         }
     }
+}
 
-    private var tintOverlay: some View {
-        LinearGradient(
-            colors: [
-                provider.tintColor.opacity(0.08),
-                provider.tintColor.opacity(0.02),
-            ],
-            startPoint: .topLeading,
-            endPoint: .bottomTrailing
-        )
-        .clipShape(RoundedRectangle(cornerRadius: UITokens.Radius.large))
+private struct ProviderSectionContent: View {
+    let provider: ProviderID
+    let providerSnapshot: ProviderQuotaSnapshot?
+    let onRefresh: () -> Void
+
+    var body: some View {
+        let accounts = sortedAccounts
+        if accounts.isEmpty {
+            DashedProviderEmptyBox(provider: provider)
+        } else {
+            VStack(spacing: UITokens.Spacing.sm) {
+                ForEach(accounts) { account in
+                    AccountBentoCard(provider: provider, account: account, onRefresh: onRefresh)
+                }
+            }
+        }
     }
 
-    private var sortedAccounts: [AccountQuota]? {
-        guard let accounts = providerSnapshot?.accounts else { return nil }
-        return accounts.values.sorted { ($0.email ?? $0.accountKey) < ($1.email ?? $1.accountKey) }
+    private var sortedAccounts: [AccountQuota] {
+        let accounts = Array((providerSnapshot?.accounts ?? [:]).values)
+        return accounts.sorted { ($0.email ?? $0.accountKey) < ($1.email ?? $1.accountKey) }
     }
 }
 
-private struct AccountQuotaCard: View {
+private struct DashedProviderEmptyBox: View {
     let provider: ProviderID
-    let account: AccountQuota
-    @State private var animatedPercent: Double = 0
-    @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: UITokens.Spacing.sm) {
-            HStack(spacing: UITokens.Spacing.sm) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 8, height: 8)
+            Text("No auth files found for this provider.".localizedStatic())
+                .font(.system(.body, design: .rounded))
+                .fontWeight(.semibold)
 
-                Text(account.email ?? account.accountKey)
-                    .font(.system(.body, design: .rounded))
-                    .fontWeight(.medium)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer()
-
-                StatusBadge(text: statusText, status: statusType)
-            }
-
-            if let progressMetrics {
-                HStack(spacing: 10) {
-                    ProgressView(value: animatedPercent)
-                        .progressViewStyle(.linear)
-                        .tint(provider.tintColor)
-                        .animation(.smooth(duration: 0.3), value: animatedPercent)
-
-                    Text("\(Int(round(animatedPercent * 100)))%")
-                        .font(.dinBold(size: 12))
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
-                        .frame(width: 40, alignment: .trailing)
-                }
-                Text(progressMetrics.detailLine)
-                    .font(.dinNumber(.caption))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            } else if let message = account.message ?? account.error {
-                Text(message)
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-            }
+            Text("Add OAuth JSON files under ~/.cli-proxy-api/ to enable quota fetching.".localizedStatic())
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
-        .padding(12)
-        .background(Color.primary.opacity(isHovering ? 0.04 : 0.02), in: RoundedRectangle(cornerRadius: UITokens.Radius.medium))
+        .padding(UITokens.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.clear)
         .overlay(
-            RoundedRectangle(cornerRadius: UITokens.Radius.medium)
+            RoundedRectangle(cornerRadius: UITokens.Radius.large, style: .continuous)
+                .stroke(style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+                .foregroundStyle(provider.tintColor.opacity(0.35))
+        )
+    }
+}
+
+private struct AccountBentoCard: View {
+    let provider: ProviderID
+    let account: AccountQuota
+    let onRefresh: () -> Void
+
+    @State private var isHovering = false
+    @State private var animatedPercent: Double = 0
+
+    var body: some View {
+        HStack(spacing: UITokens.Spacing.lg) {
+            identityColumn
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            usageColumn
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            statusColumn
+                .frame(width: 160, alignment: .trailing)
+        }
+        .padding(UITokens.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 100)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: UITokens.Radius.large, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: UITokens.Radius.large, style: .continuous)
                 .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
         )
+        .shadow(color: Color.black.opacity(isHovering ? 0.10 : 0), radius: isHovering ? 10 : 0, x: 0, y: 4)
+        .scaleEffect(isHovering ? 1.01 : 1.0)
         .onHover { hovering in
             withAnimation(UITokens.Animation.hover) {
                 isHovering = hovering
@@ -521,80 +459,182 @@ private struct AccountQuotaCard: View {
         }
         .onAppear {
             animatedPercent = 0
-            guard let percent else { return }
-            withAnimation(.smooth(duration: 0.3)) {
-                animatedPercent = percent
+            if let percent {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                    animatedPercent = percent
+                }
             }
         }
         .onChange(of: percent) { _, newValue in
             guard let newValue else { return }
-            withAnimation(.smooth(duration: 0.3)) {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                 animatedPercent = newValue
             }
         }
     }
 
-    private var statusText: String {
-        switch account.kind {
-        case .ok: "OK".localizedStatic()
-        case .authMissing: "Auth missing".localizedStatic()
-        case .unsupported: "Unsupported".localizedStatic()
-        case .error: "Error".localizedStatic()
-        case .loading: "Loading".localizedStatic()
+    private var identityColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(account.email ?? account.accountKey)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Text("OAuth".localizedStatic())
+                .font(.system(.caption2, design: .rounded))
+                .fontWeight(.medium)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                .foregroundStyle(.secondary)
         }
     }
 
-    private var statusColor: Color {
+    private var usageColumn: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 4) {
+                usedLimitText
+                Spacer(minLength: 0)
+            }
+
+            ProgressView(value: animatedPercent)
+                .progressViewStyle(.linear)
+                .tint(usageTintColor)
+                .animation(UITokens.Animation.transition, value: animatedPercent)
+
+            if let resetAt = account.quota?.resetAt {
+                Text(resetCountdownText(resetAt))
+                    .font(.dinNumber(.caption))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Text("—")
+                    .font(.dinNumber(.caption))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private var statusColumn: some View {
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 8) {
+                if isHovering {
+                    Button {
+                        onRefresh()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .buttonStyle(.toolbarIcon)
+                    .help("Refresh".localizedStatic())
+                }
+
+                StatusBadge(text: statusText, status: statusType)
+            }
+
+            if let message = account.message ?? account.error, account.kind != .ok {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.trailing)
+            } else {
+                Spacer()
+            }
+        }
+    }
+
+    private var usedLimitText: some View {
+        Group {
+            if let used = account.quota?.used, let limit = account.quota?.limit {
+                Text("\(used)")
+                    .font(.dinBold(size: 18))
+                    .contentTransition(.numericText())
+                    .monospacedDigit()
+                Text("/")
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(.tertiary)
+                Text("\(limit)")
+                    .font(.dinBold(size: 18))
+                    .contentTransition(.numericText())
+                    .monospacedDigit()
+            } else {
+                Text("—")
+                    .font(.dinBold(size: 18))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var percent: Double? {
+        guard let quota = account.quota else { return nil }
+        if let used = quota.used, let limit = quota.limit, limit > 0 {
+            return min(max(Double(used) / Double(limit), 0), 1)
+        }
+        if let remaining = quota.remaining, let limit = quota.limit, limit > 0 {
+            return min(max(1 - Double(remaining) / Double(limit), 0), 1)
+        }
+        return nil
+    }
+
+    private var usageTintColor: Color {
+        let p = percent ?? 0
+        if p < 0.70 { return .green }
+        if p < 0.90 { return .orange }
+        return .red
+    }
+
+    private var statusText: String {
         switch account.kind {
-        case .ok: .green
-        case .loading: .secondary
-        case .unsupported: .secondary
-        case .authMissing: .orange
-        case .error: .red
+        case .ok: "OK".localizedStatic()
+        case .authMissing: "WARN".localizedStatic()
+        case .unsupported: "WARN".localizedStatic()
+        case .error: "ERR".localizedStatic()
+        case .loading: "…".localizedStatic()
         }
     }
 
     private var statusType: StatusType {
         switch account.kind {
-        case .ok: .success
-        case .authMissing: .warning
-        case .unsupported: .neutral
-        case .error: .error
-        case .loading: .neutral
+        case .ok:
+            return .success
+        case .authMissing, .unsupported:
+            return .warning
+        case .error:
+            return .error
+        case .loading:
+            return .neutral
         }
     }
 
-    private struct ProgressMetrics {
-        let percent: Double
-        let detailLine: String
-    }
-
-    private var progressMetrics: ProgressMetrics? {
-        guard account.kind == .ok, let metrics = account.quota else { return nil }
-        guard let used = metrics.used, let limit = metrics.limit, limit > 0 else { return nil }
-
-        let percent = min(max(Double(used) / Double(limit), 0), 1)
-
-        let resetText: String
-        if let resetAt = metrics.resetAt {
-            resetText = String(format: "• Resets %@".localizedStatic(), formatRelative(resetAt))
-        } else {
-            resetText = ""
-        }
-
-        let base = String(format: "Used: %@ / Limit: %@".localizedStatic(), String(used), String(limit))
-        let detail = resetText.isEmpty ? base : "\(base) \(resetText)"
-
-        return ProgressMetrics(percent: percent, detailLine: detail)
-    }
-
-    private var percent: Double? {
-        progressMetrics?.percent
-    }
-
-    private func formatRelative(_ date: Date) -> String {
-        let formatter = RelativeDateTimeFormatter()
+    private func resetCountdownText(_ date: Date) -> String {
+        let interval = max(0, date.timeIntervalSinceNow)
+        let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: date, relativeTo: Date())
+        formatter.maximumUnitCount = 1
+        if interval >= 60 * 60 * 24 {
+            formatter.allowedUnits = [.day]
+        } else if interval >= 60 * 60 {
+            formatter.allowedUnits = [.hour]
+        } else {
+            formatter.allowedUnits = [.minute]
+        }
+
+        let delta = formatter.string(from: interval) ?? "—"
+        return String(format: "Resets in %@".localizedStatic(), delta)
+    }
+}
+
+private struct QuotaEmptyState: View {
+    var body: some View {
+        ContentUnavailableView {
+            Label("No quotas found".localizedStatic(), systemImage: "chart.pie")
+        } description: {
+            Text("No OAuth auth files were detected under ~/.cli-proxy-api.".localizedStatic())
+        } actions: {
+            Button("Go to Settings".localizedStatic()) {
+                FluxNavigation.navigate(to: .settings)
+            }
+            .buttonStyle(.borderedProminent)
+        }
     }
 }
