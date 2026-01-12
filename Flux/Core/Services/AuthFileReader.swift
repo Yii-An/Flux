@@ -130,7 +130,7 @@ actor AuthFileReader {
             return [
                 base.appendingPathComponent("auth.json", isDirectory: false)
             ]
-        case .gemini:
+        case .gemini, .geminiCLI:
             let base = home.appendingPathComponent(".gemini", isDirectory: true)
             return [
                 base.appendingPathComponent("oauth_creds.json", isDirectory: false)
@@ -228,8 +228,8 @@ actor AuthFileReader {
             return ["claude", "anthropic"]
         case .codex:
             return ["codex", "openai"]
-        case .gemini:
-            return ["gemini"]
+        case .gemini, .geminiCLI:
+            return ["gemini", "gemini-cli", "geminicli"]
         case .vertexAI:
             return ["vertexai", "vertex"]
         case .copilot:
@@ -301,4 +301,3 @@ actor AuthFileReader {
         return nil
     }
 }
-

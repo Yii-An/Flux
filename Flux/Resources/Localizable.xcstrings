@@ -4,9 +4,6 @@
     "—" : {
 
     },
-    "·" : {
-
-    },
     "/" : {
 
     },
@@ -1662,6 +1659,9 @@
         }
       }
     },
+    "OAuth Account" : {
+
+    },
     "OK" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1726,6 +1726,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "打开日志目录..."
+          }
+        }
+      }
+    },
+    "Plan" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Plan"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "套餐"
           }
         }
       }
@@ -1862,6 +1879,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Gemini"
+          }
+        }
+      }
+    },
+    "provider_gemini_cli" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini CLI"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gemini CLI"
           }
         }
       }

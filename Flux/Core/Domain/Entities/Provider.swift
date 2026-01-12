@@ -2,6 +2,7 @@ import Foundation
 
 enum ProviderID: String, CaseIterable, Codable, Sendable, Identifiable {
     case gemini
+    case geminiCLI
     case claude
     case codex
     case qwen
@@ -40,6 +41,7 @@ struct ProviderDescriptor: Codable, Sendable, Identifiable, Hashable {
 
     static let defaults: [ProviderDescriptor] = [
         .init(id: .gemini, displayNameKey: "provider_gemini", authKind: .file, supportsQuota: false),
+        .init(id: .geminiCLI, displayNameKey: "provider_gemini_cli", authKind: .file, supportsQuota: true),
         .init(id: .claude, displayNameKey: "provider_claude", authKind: .file, supportsQuota: true),
         .init(id: .codex, displayNameKey: "provider_codex", authKind: .file, supportsQuota: true),
         .init(id: .qwen, displayNameKey: "provider_qwen", authKind: .apiKey, supportsQuota: false),

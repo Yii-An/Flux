@@ -9,7 +9,7 @@ extension ProviderID {
         switch self {
         case .claude: "sparkles"
         case .codex: "chevron.left.forwardslash.chevron.right"
-        case .gemini: "wand.and.stars"
+        case .gemini, .geminiCLI: "wand.and.stars"
         case .copilot: "brain"
         case .cursor: "cursorarrow.rays"
         default: "bolt.horizontal"
@@ -23,6 +23,8 @@ extension ProviderID {
         case .codex:
             return Color(red: 0.08, green: 0.66, blue: 0.43)
         case .gemini:
+            return Color(red: 0.40, green: 0.35, blue: 0.98)
+        case .geminiCLI:
             return Color(red: 0.40, green: 0.35, blue: 0.98)
         case .qwen:
             return Color(red: 0.91, green: 0.25, blue: 0.35)

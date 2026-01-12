@@ -22,11 +22,25 @@ final class QuotaViewModel {
     }
 
     func refreshAll() async {
+        await refreshAll(force: false)
+    }
+
+    func refreshAll(force: Bool) async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
 
-        snapshots = await quotaAggregator.refreshAll()
+        snapshots = await quotaAggregator.refreshAll(force: force)
+        providerSnapshots = await quotaAggregator.allProviderSnapshots()
+        lastRefreshAt = Date()
+    }
+
+    func refreshProvider(_ provider: ProviderID, force: Bool = false) async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
+        defer { isRefreshing = false }
+
+        snapshots[provider] = await quotaAggregator.refresh(provider: provider, force: force)
         providerSnapshots = await quotaAggregator.allProviderSnapshots()
         lastRefreshAt = Date()
     }

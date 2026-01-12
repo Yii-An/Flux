@@ -26,6 +26,7 @@ struct ProviderIcon: View {
     private var brandColor: Color {
         switch providerID {
         case .gemini: return Color(hex: 0x4285F4)
+        case .geminiCLI: return Color(hex: 0x4285F4)
         case .claude: return Color(hex: 0xD97757)
         case .codex: return Color(hex: 0x10A37F)
         case .qwen: return Color(hex: 0x1E40AF)
@@ -38,7 +39,7 @@ struct ProviderIcon: View {
 
     private var iconName: String {
         switch providerID {
-        case .gemini, .vertexAI: return "sparkles"
+        case .gemini, .geminiCLI, .vertexAI: return "sparkles"
         case .claude: return "brain.head.profile"
         case .codex: return "terminal.fill"
         case .qwen: return "globe.asia.australia.fill"

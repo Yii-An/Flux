@@ -32,6 +32,7 @@ actor QuotaAggregator {
             ClaudeQuotaFetcher(),
             CodexQuotaFetcher(),
             AntigravityQuotaFetcher(),
+            GeminiCLIQuotaFetcher(),
             CopilotQuotaFetcher(),
         ]
     }
@@ -40,13 +41,14 @@ actor QuotaAggregator {
         fetchersByProvider = Dictionary(uniqueKeysWithValues: fetchers.map { ($0.providerID, $0) })
     }
 
-    func refreshAll() async -> [ProviderID: QuotaSnapshot] {
+    func refreshAll(force: Bool = false) async -> [ProviderID: QuotaSnapshot] {
         await updateRefreshIntervalSeconds()
 
         let now = Date()
         if let lastRefresh,
            !cache.isEmpty,
-           now.timeIntervalSince(lastRefresh) < TimeInterval(refreshIntervalSeconds) {
+           now.timeIntervalSince(lastRefresh) < TimeInterval(refreshIntervalSeconds),
+           force == false {
             return allSnapshots()
         }
 
@@ -65,7 +67,7 @@ actor QuotaAggregator {
                     continue
                 }
 
-                if isRateLimited(provider: provider, now: now), cache[provider] != nil {
+                if force == false, isRateLimited(provider: provider, now: now), cache[provider] != nil {
                     continue
                 }
 
@@ -99,7 +101,7 @@ actor QuotaAggregator {
         return allSnapshots()
     }
 
-    func refreshProvider(provider: ProviderID) async -> [String: AccountQuota] {
+    func refreshProvider(provider: ProviderID, force: Bool = false) async -> [String: AccountQuota] {
         let now = Date()
 
         if provider.descriptor.supportsQuota == false {
@@ -108,7 +110,7 @@ actor QuotaAggregator {
             return [:]
         }
 
-        if isRateLimited(provider: provider, now: now), let cached = cache[provider] {
+        if force == false, isRateLimited(provider: provider, now: now), let cached = cache[provider] {
             return cached
         }
 
@@ -127,8 +129,8 @@ actor QuotaAggregator {
         return accounts
     }
 
-    func refresh(provider: ProviderID) async -> QuotaSnapshot {
-        _ = await refreshProvider(provider: provider)
+    func refresh(provider: ProviderID, force: Bool = false) async -> QuotaSnapshot {
+        _ = await refreshProvider(provider: provider, force: force)
         return snapshot(for: provider, now: Date())
     }
 

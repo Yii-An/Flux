@@ -36,24 +36,33 @@ actor HTTPClient {
             }
 
             guard (200...299).contains(http.statusCode) else {
+                let bodySnippet: String? = {
+                    guard data.isEmpty == false else { return nil }
+                    let capped = data.prefix(4096)
+                    return String(data: capped, encoding: .utf8)
+                }()
+
+                let detailsBase = "HTTP \(http.statusCode) \(request.httpMethod ?? "") \(request.url?.absoluteString ?? "")"
+                let details = bodySnippet.map { "\(detailsBase) body=\($0)" } ?? detailsBase
+
                 switch http.statusCode {
                 case 401, 403:
                     throw FluxError(
                         code: .authError,
                         message: "Request unauthorized",
-                        details: "HTTP \(http.statusCode) \(request.url?.absoluteString ?? "")"
+                        details: details
                     )
                 case 429:
                     throw FluxError(
                         code: .rateLimited,
                         message: "Request rate limited",
-                        details: "HTTP 429 \(request.url?.absoluteString ?? "")"
+                        details: details
                     )
                 default:
                     throw FluxError(
                         code: .networkError,
                         message: "HTTP request failed",
-                        details: "HTTP \(http.statusCode) \(request.url?.absoluteString ?? "")"
+                        details: details
                     )
                 }
             }
@@ -76,4 +85,3 @@ actor HTTPClient {
         }
     }
 }
-

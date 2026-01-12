@@ -80,42 +80,75 @@ actor ClaudeQuotaFetcher: QuotaFetcher {
                     quota: nil,
                     lastUpdated: now,
                     message: nil,
-                    error: message
+                    error: message,
+                    planType: nil,
+                    modelQuotas: []
                 )
             }
 
-            let buckets = ["seven_day", "five_hour", "seven_day_sonnet", "seven_day_opus"]
-            for bucket in buckets {
-                guard let bucketJSON = json[bucket] as? [String: Any] else { continue }
+            let bucketDefinitions: [(key: String, id: String, name: String)] = [
+                ("five_hour", "claude.five_hour", "5小时"),
+                ("seven_day", "claude.seven_day", "7天"),
+                ("seven_day_sonnet", "claude.seven_day_sonnet", "Sonnet 7天"),
+                ("seven_day_opus", "claude.seven_day_opus", "Opus 7天"),
+            ]
+
+            var modelQuotas: [ModelQuota] = []
+            for def in bucketDefinitions {
+                guard let bucketJSON = json[def.key] as? [String: Any] else { continue }
                 guard let utilization = parseDouble(bucketJSON["utilization"]) else { continue }
-                let used = max(0, min(100, Int(utilization.rounded())))
+                let used = max(0, min(100, utilization))
                 let resetAt = parseISO8601Date(bucketJSON["resets_at"])
-                let metrics = QuotaMetrics(
-                    used: used,
+                modelQuotas.append(ModelQuota(
+                    modelId: def.id,
+                    displayName: def.name,
+                    usedPercent: used,
+                    remainingPercent: max(0, 100 - used),
+                    resetAt: resetAt
+                ))
+            }
+
+            if let extraJSON = json["extra_usage"] as? [String: Any] {
+                let enabled = (extraJSON["is_enabled"] as? Bool) ?? false
+                if enabled, let utilization = parseDouble(extraJSON["utilization"]) {
+                    let used = max(0, min(100, utilization))
+                    modelQuotas.append(ModelQuota(
+                        modelId: "claude.extra_usage",
+                        displayName: "额外额度",
+                        usedPercent: used,
+                        remainingPercent: max(0, 100 - used),
+                        resetAt: nil
+                    ))
+                }
+            }
+
+            let primaryForSummary = modelQuotas.first(where: { $0.modelId == "claude.seven_day" })
+                ?? modelQuotas.first(where: { $0.modelId == "claude.five_hour" })
+                ?? modelQuotas.first
+
+            let metrics: QuotaMetrics?
+            if let primaryForSummary {
+                metrics = QuotaMetrics(
+                    used: Int(primaryForSummary.usedPercent.rounded()),
                     limit: 100,
-                    remaining: max(0, 100 - used),
-                    resetAt: resetAt,
+                    remaining: Int(primaryForSummary.remainingPercent.rounded()),
+                    resetAt: primaryForSummary.resetAt,
                     unit: .credits
                 )
-                return AccountQuota(
-                    accountKey: accountKey,
-                    email: file.email,
-                    kind: .ok,
-                    quota: metrics,
-                    lastUpdated: now,
-                    message: "bucket=\(bucket)",
-                    error: nil
-                )
+            } else {
+                metrics = nil
             }
 
             return AccountQuota(
                 accountKey: accountKey,
                 email: file.email,
                 kind: .ok,
-                quota: nil,
+                quota: metrics,
                 lastUpdated: now,
                 message: nil,
-                error: nil
+                error: nil,
+                planType: nil,
+                modelQuotas: modelQuotas
             )
         } catch let error as FluxError {
             let kind: QuotaSnapshotKind = (error.code == .authError) ? .authMissing : .error
@@ -126,7 +159,9 @@ actor ClaudeQuotaFetcher: QuotaFetcher {
                 quota: nil,
                 lastUpdated: now,
                 message: nil,
-                error: error.message
+                error: error.message,
+                planType: nil,
+                modelQuotas: []
             )
         } catch {
             return AccountQuota(
@@ -136,7 +171,9 @@ actor ClaudeQuotaFetcher: QuotaFetcher {
                 quota: nil,
                 lastUpdated: now,
                 message: nil,
-                error: "Claude quota fetch failed".localizedStatic()
+                error: "Claude quota fetch failed".localizedStatic(),
+                planType: nil,
+                modelQuotas: []
             )
         }
     }
