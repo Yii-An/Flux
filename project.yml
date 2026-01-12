@@ -1,0 +1,95 @@
+name: Flux
+options:
+  bundleIdPrefix: com.flux
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  usesSwiftPackageManager: true
+  developmentLanguage: en
+  configFiles:
+    Debug: Config/Debug.xcconfig
+    Release: Config/Release.xcconfig
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    from: 2.5.0
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_MODE: strict
+    GCC_PREPROCESSOR_DEFINITIONS: $(inherited)
+    MACOSX_DEPLOYMENT_TARGET: 15.0
+    PRODUCT_NAME: $(TARGET_NAME)
+    PRODUCT_BUNDLE_IDENTIFIER: com.flux.Flux
+    SUPPORTS_MACCATALYST: NO
+    ENABLE_PREVIEWS: YES
+    COMBINE_HIDPI_IMAGES: YES
+
+targets:
+  Flux:
+    type: application
+    platform: macOS
+    deploymentTarget: "15.0"
+    sources:
+      - path: Flux
+        excludes:
+          - Resources/Fonts
+    resources:
+      - path: Flux/Resources/Fonts
+    dependencies:
+      - package: Sparkle
+    info:
+      path: Flux/Info.plist
+      properties:
+        CFBundleExecutable: "$(EXECUTABLE_NAME)"
+        CFBundleIdentifier: "$(PRODUCT_BUNDLE_IDENTIFIER)"
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundleName: "$(PRODUCT_NAME)"
+        CFBundlePackageType: "APPL"
+        CFBundleShortVersionString: "1.0.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "15.0"
+        SUFeedURL: "https://flux.example.com/appcast.xml"
+        SUPublicEDKey: "REPLACE_ME_WITH_SPARKLE_PUBLIC_ED25519_KEY"
+        ATSApplicationFontsPath: "Fonts"
+        NSMainStoryboardFile: ""
+        NSPrincipalClass: "NSApplication"
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            localhost:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            "127.0.0.1":
+              NSExceptionAllowsInsecureHTTPLoads: true
+        LSUIElement: true
+    settings:
+      base:
+        PRODUCT_NAME: Flux
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    scheme:
+      testTargets: []
+      commandLineArguments: {}
+      environmentVariables: {}
+      postRunActions: []
+      preActions: []
+
+schemes:
+  Flux:
+    build:
+      targets:
+        Flux: all
+    run:
+      config: Debug
+      commandLineArguments: {}
+      environmentVariables: {}
+    test:
+      config: Debug
+      targets: []
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

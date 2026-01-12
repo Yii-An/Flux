@@ -1,0 +1,141 @@
+import Foundation
+import Observation
+
+enum AuthFileProvider: String, Codable, Sendable {
+    case claude
+    case codex
+    case antigravity
+    case copilot
+    case unknown
+}
+
+struct AuthFileInfo: Codable, Sendable, Hashable, Identifiable {
+    var id: String { filePath }
+
+    let filename: String
+    let provider: AuthFileProvider
+    let accessToken: String
+    let refreshToken: String?
+    let email: String?
+    let expiredAt: Date?
+    let accountId: String?
+    let filePath: String
+}
+
+@Observable
+final class CLIProxyAuthScanner: @unchecked Sendable {
+    init() {}
+
+    func scanAuthFiles() async -> [AuthFileInfo] {
+        let directoryURL = FluxPaths.cliProxyAuthDir()
+        let directoryPath = directoryURL.path
+        return Self.scanDirectory(directoryPath: directoryPath)
+    }
+
+    private static func scanDirectory(directoryPath: String) -> [AuthFileInfo] {
+        let fileManager = FileManager.default
+
+        guard fileManager.fileExists(atPath: directoryPath) else { return [] }
+
+        let entries: [String]
+        do {
+            entries = try fileManager.contentsOfDirectory(atPath: directoryPath)
+        } catch {
+            return []
+        }
+
+        return entries
+            .filter { $0.hasSuffix(".json") }
+            .compactMap { filename -> AuthFileInfo? in
+                let filePath = (directoryPath as NSString).appendingPathComponent(filename)
+                return parseAuthFile(filePath: filePath, filename: filename)
+            }
+    }
+
+    private static func parseAuthFile(filePath: String, filename: String) -> AuthFileInfo? {
+        guard let data = FileManager.default.contents(atPath: filePath) else { return nil }
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+
+        let provider = detectProvider(filename: filename, json: json)
+        guard provider != .unknown else { return nil }
+
+        guard let accessToken = firstNonEmptyString(json, keys: ["access_token", "accessToken", "session_key", "oauth_token"]) else {
+            return nil
+        }
+
+        let refreshToken = firstNonEmptyString(json, keys: ["refresh_token", "refreshToken"])
+        let email = firstNonEmptyString(json, keys: ["email", "user_email", "account_email", "username", "login"])
+        let accountId = firstNonEmptyString(json, keys: ["account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"])
+        let expiredAt = parseExpiryDate(json)
+
+        return AuthFileInfo(
+            filename: filename,
+            provider: provider,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            email: email,
+            expiredAt: expiredAt,
+            accountId: accountId,
+            filePath: filePath
+        )
+    }
+
+    private static func detectProvider(filename: String, json: [String: Any]) -> AuthFileProvider {
+        let lower = filename.lowercased()
+        if lower.hasPrefix("claude-") { return .claude }
+        if lower.hasPrefix("codex-") { return .codex }
+        if lower.hasPrefix("antigravity-") { return .antigravity }
+        if lower.hasPrefix("github-copilot-") { return .copilot }
+
+        if let typeValue = firstNonEmptyString(json, keys: ["type", "provider", "providerId", "provider_id", "service", "kind"])?.lowercased() {
+            if typeValue.contains("claude") || typeValue.contains("anthropic") { return .claude }
+            if typeValue.contains("codex") || typeValue.contains("openai") { return .codex }
+            if typeValue.contains("antigravity") { return .antigravity }
+            if typeValue.contains("copilot") || typeValue.contains("github-copilot") { return .copilot }
+        }
+
+        return .unknown
+    }
+
+    private static func firstNonEmptyString(_ json: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            if let value = json[key] as? String {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { return trimmed }
+            }
+        }
+        return nil
+    }
+
+    private static func parseExpiryDate(_ json: [String: Any]) -> Date? {
+        let dateKeys = ["expired", "expires_at", "expiresAt", "expiry", "expiry_date", "expiryDate"]
+        for key in dateKeys {
+            if let date = parseDate(json[key]) {
+                return date
+            }
+        }
+        return nil
+    }
+
+    private static func parseDate(_ value: Any?) -> Date? {
+        if let date = value as? Date { return date }
+        if let seconds = value as? TimeInterval { return Date(timeIntervalSince1970: seconds) }
+        if let number = value as? NSNumber { return Date(timeIntervalSince1970: number.doubleValue) }
+
+        guard let string = value as? String else { return nil }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = iso.date(from: trimmed) { return date }
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: trimmed) { return date }
+
+        if let seconds = TimeInterval(trimmed) {
+            return Date(timeIntervalSince1970: seconds)
+        }
+
+        return nil
+    }
+}

@@ -1,0 +1,48 @@
+# macOS
+.DS_Store
+
+# Xcode user data
+xcuserdata/
+*.xcscmblueprint
+*.xccheckout
+
+# Build
+build/
+DerivedData/
+
+# Generated
+Flux.xcodeproj/
+.sisyphus/
+
+# Dependencies
+Pods/
+Carthage/
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# Misc
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+.codex-session
+.gemini-session
+.opencode-session
+.claude/
+.autoflow/
+plan_log.md
+state.json
+todo.md
+
+external/
+
+AGENTS.md
+CLAUDE.md

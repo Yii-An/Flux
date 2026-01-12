@@ -1,0 +1,4 @@
+--- DASHBOARD BRANDING LOGO ---
+
+PROMPT 4 (Clean 'F' for Dashboard Header):
+A modern, stylized letter "F" logo. The design features a smooth, flowing gradient form blending electric blue, mint green, and violet, representing data flow and AI energy. 3D isometric view with a matte glossy finish. Clean, sharp edges. ISOLATED on a pure solid white background. No shadow, no background details, flat lighting for easy cutout. High resolution vector style. --v 6.0 --no shadow
