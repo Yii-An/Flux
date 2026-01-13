@@ -39,8 +39,10 @@ struct FluxRootView: View {
             .navigationTitle("Flux".localizedStatic())
             .navigationSplitViewColumnWidth(min: 170, ideal: 195, max: 220)
         } detail: {
-            detailView(for: currentPage)
-                .navigationTitle(currentPage.title.localizedStatic())
+            NavigationStack {
+                detailView(for: currentPage)
+            }
+            .navigationTitle(currentPage.title.localizedStatic())
         }
         .environment(\.locale, languageManager.locale)
         .frame(minWidth: 1100, minHeight: 700)

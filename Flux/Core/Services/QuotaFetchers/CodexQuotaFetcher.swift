@@ -4,9 +4,11 @@ actor CodexQuotaFetcher: QuotaFetcher {
     nonisolated let providerID: ProviderID = .codex
 
     private let httpClient: HTTPClient
+    private let logger: FluxLogger
 
-    init(httpClient: HTTPClient = .shared) {
+    init(httpClient: HTTPClient = .shared, logger: FluxLogger = .shared) {
         self.httpClient = httpClient
+        self.logger = logger
     }
 
     func fetchQuotas(authFiles: [AuthFileInfo]) async -> [String: AccountQuota] {
@@ -48,8 +50,12 @@ actor CodexQuotaFetcher: QuotaFetcher {
 
         var accessToken = file.accessToken
         if shouldAttemptRefresh(file: file) {
+            await logger.log(.debug, category: LogCategories.quotaCodex, metadata: ["account": .string(accountKey)], message: "attempt token refresh")
             if let refreshed = await refreshAccessToken(from: file) {
                 accessToken = refreshed
+                await logger.log(.debug, category: LogCategories.quotaCodex, metadata: ["account": .string(accountKey)], message: "token refresh ok")
+            } else {
+                await logger.log(.warning, category: LogCategories.quotaCodex, metadata: ["account": .string(accountKey)], message: "token refresh failed")
             }
         }
 
@@ -103,6 +109,16 @@ actor CodexQuotaFetcher: QuotaFetcher {
             if let quota = buildCodexModelQuota(id: "codex.code_review", name: "代码审查限额", window: codeReviewWindow) {
                 modelQuotas.append(quota)
             }
+
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaCodex,
+                metadata: [
+                    "account": .string(accountKey),
+                    "windows": .int(modelQuotas.count),
+                ],
+                message: "parsed usage windows"
+            )
 
             let primaryUsedPercent = primaryWindow.usedPercent
 

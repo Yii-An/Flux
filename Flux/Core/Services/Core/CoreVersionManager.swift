@@ -3,6 +3,7 @@ import Foundation
 
 actor CoreVersionManager {
     static let shared = CoreVersionManager()
+    static let didChangeNotification = Notification.Name("CoreVersionManager.DidChange")
 
     private let fileManager: FileManager
 
@@ -81,6 +82,7 @@ actor CoreVersionManager {
         let activeFile = ActiveVersionFile(version: version)
         let data = try encoder.encode(activeFile)
         try data.write(to: activeFileURL(), options: [.atomic])
+        postDidChange()
     }
 
     func installVersion(from sourceBinary: URL, version: String, setActive: Bool = false) throws -> CoreVersion {
@@ -114,6 +116,8 @@ actor CoreVersionManager {
 
         if setActive {
             try self.setActiveVersion(version)
+        } else {
+            postDidChange()
         }
 
         return CoreVersion(
@@ -253,6 +257,12 @@ actor CoreVersionManager {
 
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func postDidChange() {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: nil)
+        }
     }
 }
 

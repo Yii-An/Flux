@@ -4,9 +4,11 @@ actor CopilotQuotaFetcher: QuotaFetcher {
     nonisolated let providerID: ProviderID = .copilot
 
     private let httpClient: HTTPClient
+    private let logger: FluxLogger
 
-    init(httpClient: HTTPClient = .shared) {
+    init(httpClient: HTTPClient = .shared, logger: FluxLogger = .shared) {
         self.httpClient = httpClient
+        self.logger = logger
     }
 
     func fetchQuotas(authFiles: [AuthFileInfo]) async -> [String: AccountQuota] {
@@ -76,6 +78,7 @@ actor CopilotQuotaFetcher: QuotaFetcher {
             let resetAt = parseResetDate(from: json)
 
             if let metrics = extractQuotaMetrics(from: json, resetAt: resetAt) {
+                await logger.log(.debug, category: LogCategories.quotaCopilot, metadata: ["account": .string(accountKey)], message: "parsed quota_snapshots")
                 return AccountQuota(
                     accountKey: accountKey,
                     email: file.email,

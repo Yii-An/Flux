@@ -57,7 +57,18 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
 
                 Toggle("Launch at Login".localizedStatic(), isOn: $viewModel.launchAtLogin)
+                Toggle("Show in Dock".localizedStatic(), isOn: $viewModel.settings.showInDock)
                 Toggle("Auto Check Updates".localizedStatic(), isOn: $viewModel.settings.automaticallyChecksForUpdates)
+
+                Picker("Quota Refresh Interval".localizedStatic(), selection: $viewModel.settings.refreshIntervalSeconds) {
+                    Text("Never".localizedStatic()).tag(0)
+                    Text("1 minute".localizedStatic()).tag(60)
+                    Text("5 minutes".localizedStatic()).tag(300)
+                    Text("10 minutes".localizedStatic()).tag(600)
+                    Text("30 minutes".localizedStatic()).tag(1800)
+                    Text("1 hour".localizedStatic()).tag(3600)
+                }
+                .pickerStyle(.menu)
             } header: {
                 Text("General".localizedStatic())
             } footer: {
@@ -112,8 +123,14 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .navigationTitle("Settings".localizedStatic())
+        .onChange(of: viewModel.settings.showInDock) { _, newValue in
+            NSApp.setActivationPolicy(newValue ? .regular : .accessory)
+        }
         .task {
             await viewModel.load()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: CoreVersionManager.didChangeNotification)) { _ in
+            Task { await viewModel.refreshCoreStatus() }
         }
     }
 }

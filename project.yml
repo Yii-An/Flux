@@ -58,12 +58,11 @@ targets:
         NSMainStoryboardFile: ""
         NSPrincipalClass: "NSApplication"
         NSAppTransportSecurity:
-          NSExceptionDomains:
+        NSExceptionDomains:
             localhost:
               NSExceptionAllowsInsecureHTTPLoads: true
             "127.0.0.1":
               NSExceptionAllowsInsecureHTTPLoads: true
-        LSUIElement: true
     settings:
       base:
         PRODUCT_NAME: Flux

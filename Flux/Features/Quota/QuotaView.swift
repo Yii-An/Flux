@@ -38,7 +38,7 @@ struct QuotaView: View {
                                     ProviderSectionContent(
                                         provider: provider,
                                         providerSnapshot: viewModel.providerSnapshots[provider],
-                                        isRefreshing: viewModel.isRefreshing,
+                                        isRefreshing: viewModel.isRefreshingAll || viewModel.refreshingProviders.contains(provider),
                                         onRefresh: {
                                             Task { await viewModel.refreshProvider(provider, force: true) }
                                         }
@@ -79,11 +79,11 @@ struct QuotaView: View {
                 Task { await viewModel.refreshAll(force: true) }
             } label: {
                 Image(systemName: "arrow.clockwise")
-                    .symbolEffect(.rotate, options: .repeat(.continuous), value: viewModel.isRefreshing)
+                    .symbolEffect(.rotate, options: .repeat(.continuous), isActive: viewModel.isRefreshingAll)
             }
             .buttonStyle(.toolbarIcon)
             .help("Refresh".localizedStatic())
-            .disabled(viewModel.isRefreshing)
+            .disabled(viewModel.isRefreshingAny)
         }
         .animation(UITokens.Animation.transition, value: viewModel.lastRefreshAt)
         .background(Color(nsColor: .windowBackgroundColor))

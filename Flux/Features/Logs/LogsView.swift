@@ -5,26 +5,36 @@ import UniformTypeIdentifiers
 struct LogsView: View {
     @State private var viewModel = LogsViewModel()
     @State private var filterLevel: FluxLogLevel?
+    @State private var filterCategory: LogCategory?
+    @State private var searchText: String = ""
 
     var body: some View {
-        Group {
-            if !viewModel.coreState.isRunning {
+        VStack(spacing: UITokens.Spacing.md) {
+            if let errorMessage = viewModel.errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+            }
+
+            HStack(spacing: UITokens.Spacing.md) {
+                Picker("Source".localizedStatic(), selection: $viewModel.source) {
+                    Text("App".localizedStatic()).tag(LogsSource.app)
+                    Text("Core".localizedStatic()).tag(LogsSource.core)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 220)
+
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            if viewModel.source == .core, !viewModel.coreState.isRunning {
                 CoreOfflineView(
                     coreState: viewModel.coreState,
-                    onStart: {
-                        await viewModel.startCore()
-                    },
-                    onInstallFromFile: {
-                        showInstallFromFilePanel()
-                    }
+                    onStart: { await viewModel.startCore() },
+                    onInstallFromFile: { showInstallFromFilePanel() }
                 )
             } else {
                 VStack(spacing: UITokens.Spacing.md) {
-                    if let errorMessage = viewModel.errorMessage {
-                        Text(errorMessage)
-                            .foregroundStyle(.red)
-                    }
-
                     HStack(spacing: UITokens.Spacing.md) {
                         Picker("Level".localizedStatic(), selection: $filterLevel) {
                             Text("All".localizedStatic()).tag(nil as FluxLogLevel?)
@@ -35,7 +45,20 @@ struct LogsView: View {
                         }
                         .pickerStyle(.segmented)
 
+                        Picker("Category".localizedStatic(), selection: $filterCategory) {
+                            Text("All".localizedStatic()).tag(nil as LogCategory?)
+                            ForEach(availableCategories, id: \.self) { category in
+                                Text(category).tag(category as LogCategory?)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 240)
+
                         Spacer()
+
+                        TextField("Search".localizedStatic(), text: $searchText)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 240)
                     }
                     .padding(.horizontal)
 
@@ -62,8 +85,9 @@ struct LogsView: View {
                 }
             }
         }
-        .task {
-            await viewModel.refresh()
+        .task { await viewModel.load() }
+        .onChange(of: viewModel.source) { _, newValue in
+            Task { await viewModel.applySource(newValue) }
         }
         .toolbar {
             ToolbarItemGroup {
@@ -117,14 +141,34 @@ struct LogsView: View {
         }
     }
 
-    private var filteredEntries: [LogEntry] {
-        guard let filterLevel else { return viewModel.entries }
-        return viewModel.entries.filter { $0.level == filterLevel }
+    private var availableCategories: [LogCategory] {
+        Array(Set(viewModel.entries.map(\.category))).sorted()
+    }
+
+    private var filteredEntries: [LogRecord] {
+        var results = viewModel.reversedEntries
+        if let filterLevel {
+            results = results.filter { $0.level == filterLevel }
+        }
+        if let filterCategory {
+            results = results.filter { $0.category == filterCategory }
+        }
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty == false {
+            let lower = query.lowercased()
+            results = results.filter { record in
+                if record.message.lowercased().contains(lower) { return true }
+                return record.metadata.contains(where: { key, value in
+                    key.lowercased().contains(lower) || value.displayString.lowercased().contains(lower)
+                })
+            }
+        }
+        return results
     }
 }
 
 private struct LogRow: View {
-    let entry: LogEntry
+    let entry: LogRecord
     @State private var isHovering = false
 
     var body: some View {
@@ -139,6 +183,12 @@ private struct LogRow: View {
                 .padding(.vertical, 2)
                 .background(Color.secondary.opacity(0.1), in: Capsule())
                 .foregroundStyle(.secondary)
+
+            Text(entry.category)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
 
             Text(primaryText)
                 .font(.system(.body, design: .monospaced))

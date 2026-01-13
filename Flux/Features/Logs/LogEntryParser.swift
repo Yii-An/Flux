@@ -1,7 +1,7 @@
 import Foundation
 
 enum LogEntryParser {
-    static func parse(text: String) -> [LogEntry] {
+    static func parse(text: String, category: LogCategory) -> [LogRecord] {
         let lines = text
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -120,11 +120,13 @@ enum LogEntryParser {
         return cappedLines.enumerated().map { index, line in
             let fallback = baseTime.addingTimeInterval(TimeInterval(index - cappedLines.count + 1))
             let parsed = parseLine(line, fallbackTimestamp: fallback)
-            return LogEntry(
-                id: index,
+            return LogRecord(
+                id: UUID(),
+                timestamp: parsed.timestamp,
                 level: inferLevel(from: parsed.message.isEmpty ? line : parsed.message),
+                category: category,
                 message: parsed.message.isEmpty ? line : parsed.message,
-                timestamp: parsed.timestamp
+                metadata: [:]
             )
         }
     }

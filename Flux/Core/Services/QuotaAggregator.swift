@@ -5,6 +5,7 @@ actor QuotaAggregator {
 
     private let settingsStore: SettingsStore
     private let cliProxyAuthScanner: CLIProxyAuthScanner
+    private let logger: FluxLogger
 
     private var fetchersByProvider: [ProviderID: any QuotaFetcher]
 
@@ -20,11 +21,13 @@ actor QuotaAggregator {
     init(
         settingsStore: SettingsStore = .shared,
         cliProxyAuthScanner: CLIProxyAuthScanner = CLIProxyAuthScanner(),
-        fetchers: [any QuotaFetcher] = []
+        fetchers: [any QuotaFetcher] = [],
+        logger: FluxLogger = .shared
     ) {
         self.settingsStore = settingsStore
         self.cliProxyAuthScanner = cliProxyAuthScanner
         self.fetchersByProvider = Dictionary(uniqueKeysWithValues: fetchers.map { ($0.providerID, $0) })
+        self.logger = logger
     }
 
     private static func defaultFetchers() -> [any QuotaFetcher] {
@@ -45,14 +48,48 @@ actor QuotaAggregator {
         await updateRefreshIntervalSeconds()
 
         let now = Date()
+        let supportedProviders = ProviderID.allCases.filter(\.descriptor.supportsQuota)
+        let hasUnloadedSupportedProvider = supportedProviders.contains { provider in
+            cache[provider] == nil && missingFetcherProviders.contains(provider) == false
+        }
+
         if let lastRefresh,
            !cache.isEmpty,
            now.timeIntervalSince(lastRefresh) < TimeInterval(refreshIntervalSeconds),
-           force == false {
+           force == false,
+           hasUnloadedSupportedProvider == false {
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaAggregator,
+                metadata: [
+                    "force": .bool(force),
+                    "ageSec": .int(Int(now.timeIntervalSince(lastRefresh))),
+                    "intervalSec": .int(refreshIntervalSeconds),
+                ],
+                message: "refreshAll skipped (cached)"
+            )
             return allSnapshots()
         }
 
         let authFiles = await cliProxyAuthScanner.scanAuthFiles()
+        if authFiles.isEmpty {
+            await logger.log(.debug, category: LogCategories.quotaAggregator, metadata: ["count": .int(0)], message: "scanAuthFiles")
+        } else {
+            var counts: [AuthFileProvider: Int] = [:]
+            for file in authFiles {
+                counts[file.provider, default: 0] += 1
+            }
+            let summary = counts
+                .sorted(by: { $0.key.rawValue < $1.key.rawValue })
+                .map { "\($0.key.rawValue)=\($0.value)" }
+                .joined(separator: " ")
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaAggregator,
+                metadata: ["count": .int(authFiles.count), "providers": .string(summary)],
+                message: "scanAuthFiles"
+            )
+        }
 
         let providers = ProviderID.allCases
         var refreshedProviders: Set<ProviderID> = []
@@ -223,7 +260,11 @@ actor QuotaAggregator {
     private func updateRefreshIntervalSeconds() async {
         do {
             let settings = try await settingsStore.load()
-            refreshIntervalSeconds = max(5, settings.refreshIntervalSeconds)
+            if settings.refreshIntervalSeconds <= 0 {
+                refreshIntervalSeconds = 300
+            } else {
+                refreshIntervalSeconds = max(5, settings.refreshIntervalSeconds)
+            }
         } catch {
             // Keep last known refreshIntervalSeconds
         }

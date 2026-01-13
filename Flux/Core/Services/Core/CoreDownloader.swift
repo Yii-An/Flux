@@ -38,7 +38,7 @@ actor CoreDownloader {
     }
 
     func fetchAvailableReleases() async throws -> [Release] {
-        let url = URL(string: "https://api.github.com/repos/anthropics/claude-code/releases")!
+        let url = URL(string: "https://api.github.com/repos/router-for-me/CLIProxyAPIPlus/releases")!
         let headers = githubHeaders()
         let data = try await httpClient.get(url: url, headers: headers)
 

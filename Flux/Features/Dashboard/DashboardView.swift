@@ -7,6 +7,7 @@ struct DashboardView: View {
     var body: some View {
         ScrollView(.vertical) {
             VStack(alignment: .leading, spacing: UITokens.Spacing.md) {
+                corePromptCard
                 topRow
                 middleRow
                 bottomRow
@@ -85,6 +86,69 @@ struct DashboardView: View {
             }
         )
         .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var corePromptCard: some View {
+        if viewModel.coreNotInstalled {
+            promptCard(
+                systemImage: "exclamationmark.triangle.fill",
+                titleKey: "Core Not Installed",
+                messageKey: "Install Core from Settings",
+                buttonKey: "Manage in Settings"
+            )
+        } else if viewModel.coreUpdateAvailable {
+            let version = viewModel.coreLatestVersion ?? "—"
+            promptCard(
+                systemImage: "arrow.down.circle.fill",
+                titleKey: "Core Update Available",
+                messageKey: "New version %@",
+                versionText: version,
+                buttonKey: "Manage in Settings"
+            )
+        }
+    }
+
+    private func promptCard(
+        systemImage: String,
+        titleKey: String,
+        messageKey: String,
+        versionText: String? = nil,
+        buttonKey: String
+    ) -> some View {
+        HStack(alignment: .top, spacing: UITokens.Spacing.md) {
+            Image(systemName: systemImage)
+                .font(.title2)
+                .foregroundStyle(.orange)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(titleKey.localizedStatic())
+                    .font(.headline)
+
+                if let versionText {
+                    Text(String(format: messageKey.localizedStatic(), versionText))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Text(messageKey.localizedStatic())
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            Button {
+                FluxNavigation.navigate(to: .settings)
+            } label: {
+                Text(buttonKey.localizedStatic())
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(UITokens.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: UITokens.Radius.medium))
     }
 
     private func openInFinder(_ url: URL) {

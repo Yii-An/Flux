@@ -5,19 +5,28 @@ actor GeminiCLIQuotaFetcher: QuotaFetcher {
 
     private let httpClient: HTTPClient
     private let quotaURL = URL(string: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota")
+    private let logger: FluxLogger
 
-    init(httpClient: HTTPClient = .shared) {
+    init(httpClient: HTTPClient = .shared, logger: FluxLogger = .shared) {
         self.httpClient = httpClient
+        self.logger = logger
     }
 
     func fetchQuotas(authFiles: [AuthFileInfo]) async -> [String: AccountQuota] {
         let now = Date()
 
-        guard let auth = readOAuthCreds() else { return [:] }
-        guard let accessToken = nonEmpty(auth.accessToken) else { return [:] }
+        guard let auth = readOAuthCreds() else {
+            await logger.log(.debug, category: LogCategories.quotaGeminiCLI, message: "oauth_creds missing")
+            return [:]
+        }
+        guard let accessToken = nonEmpty(auth.accessToken) else {
+            await logger.log(.warning, category: LogCategories.quotaGeminiCLI, message: "access token missing")
+            return [:]
+        }
 
         if let expiryDate = auth.expiryDate, expiryDate <= now {
             let accountKey = auth.email ?? "Gemini CLI"
+            await logger.log(.warning, category: LogCategories.quotaGeminiCLI, metadata: ["account": .string(accountKey)], message: "token expired")
             return [
                 accountKey: AccountQuota(
                     accountKey: accountKey,
@@ -55,6 +64,12 @@ actor GeminiCLIQuotaFetcher: QuotaFetcher {
             let summary = summarize(modelQuotas)
 
             let accountKey = auth.email ?? "Gemini CLI"
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaGeminiCLI,
+                metadata: ["account": .string(accountKey), "buckets": .int(buckets.count), "groups": .int(modelQuotas.count)],
+                message: "parsed quota buckets"
+            )
             return [
                 accountKey: AccountQuota(
                     accountKey: accountKey,
@@ -271,4 +286,3 @@ actor GeminiCLIQuotaFetcher: QuotaFetcher {
         return trimmed.isEmpty ? nil : trimmed
     }
 }
-

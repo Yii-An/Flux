@@ -4,9 +4,11 @@ actor ClaudeQuotaFetcher: QuotaFetcher {
     nonisolated let providerID: ProviderID = .claude
 
     private let httpClient: HTTPClient
+    private let logger: FluxLogger
 
-    init(httpClient: HTTPClient = .shared) {
+    init(httpClient: HTTPClient = .shared, logger: FluxLogger = .shared) {
         self.httpClient = httpClient
+        self.logger = logger
     }
 
     func fetchQuotas(authFiles: [AuthFileInfo]) async -> [String: AccountQuota] {
@@ -138,6 +140,13 @@ actor ClaudeQuotaFetcher: QuotaFetcher {
             } else {
                 metrics = nil
             }
+
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaClaude,
+                metadata: ["account": .string(accountKey), "buckets": .int(modelQuotas.count)],
+                message: "parsed oauth buckets"
+            )
 
             return AccountQuota(
                 accountKey: accountKey,

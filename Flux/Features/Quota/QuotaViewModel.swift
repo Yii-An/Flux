@@ -7,13 +7,18 @@ final class QuotaViewModel {
     var snapshots: [ProviderID: QuotaSnapshot] = [:]
     var providerSnapshots: [ProviderID: ProviderQuotaSnapshot] = [:]
     var lastRefreshAt: Date?
-    var isRefreshing: Bool = false
+    var isRefreshingAll: Bool = false
+    var refreshingProviders: Set<ProviderID> = []
     var errorMessage: String?
 
     private let quotaAggregator: QuotaAggregator
 
     init(quotaAggregator: QuotaAggregator = .shared) {
         self.quotaAggregator = quotaAggregator
+    }
+
+    var isRefreshingAny: Bool {
+        isRefreshingAll || refreshingProviders.isEmpty == false
     }
 
     func loadCached() async {
@@ -26,9 +31,17 @@ final class QuotaViewModel {
     }
 
     func refreshAll(force: Bool) async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        guard !isRefreshingAll else { return }
+        isRefreshingAll = true
+
+        let supportedProviders = ProviderID.allCases.filter(\.descriptor.supportsQuota)
+        let newlyRefreshing = Set(supportedProviders).subtracting(refreshingProviders)
+        refreshingProviders.formUnion(newlyRefreshing)
+
+        defer {
+            isRefreshingAll = false
+            refreshingProviders.subtract(newlyRefreshing)
+        }
 
         snapshots = await quotaAggregator.refreshAll(force: force)
         providerSnapshots = await quotaAggregator.allProviderSnapshots()
@@ -36,9 +49,10 @@ final class QuotaViewModel {
     }
 
     func refreshProvider(_ provider: ProviderID, force: Bool = false) async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        guard isRefreshingAll == false else { return }
+        guard refreshingProviders.contains(provider) == false else { return }
+        refreshingProviders.insert(provider)
+        defer { refreshingProviders.remove(provider) }
 
         snapshots[provider] = await quotaAggregator.refresh(provider: provider, force: force)
         providerSnapshots = await quotaAggregator.allProviderSnapshots()

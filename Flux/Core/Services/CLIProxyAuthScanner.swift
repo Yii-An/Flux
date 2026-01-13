@@ -24,12 +24,18 @@ struct AuthFileInfo: Codable, Sendable, Hashable, Identifiable {
 
 @Observable
 final class CLIProxyAuthScanner: @unchecked Sendable {
-    init() {}
+    private let logger: FluxLogger
+
+    init(logger: FluxLogger = .shared) {
+        self.logger = logger
+    }
 
     func scanAuthFiles() async -> [AuthFileInfo] {
         let directoryURL = FluxPaths.cliProxyAuthDir()
         let directoryPath = directoryURL.path
-        return Self.scanDirectory(directoryPath: directoryPath)
+        let results = Self.scanDirectory(directoryPath: directoryPath)
+        await logger.log(.debug, category: LogCategories.auth, metadata: ["count": .int(results.count), "dir": .string(directoryPath)], message: "scanAuthFiles")
+        return results
     }
 
     private static func scanDirectory(directoryPath: String) -> [AuthFileInfo] {
@@ -119,8 +125,8 @@ final class CLIProxyAuthScanner: @unchecked Sendable {
 
     private static func parseDate(_ value: Any?) -> Date? {
         if let date = value as? Date { return date }
-        if let seconds = value as? TimeInterval { return Date(timeIntervalSince1970: seconds) }
-        if let number = value as? NSNumber { return Date(timeIntervalSince1970: number.doubleValue) }
+        if let seconds = value as? TimeInterval { return dateFromEpoch(seconds) }
+        if let number = value as? NSNumber { return dateFromEpoch(number.doubleValue) }
 
         guard let string = value as? String else { return nil }
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -133,9 +139,17 @@ final class CLIProxyAuthScanner: @unchecked Sendable {
         if let date = iso.date(from: trimmed) { return date }
 
         if let seconds = TimeInterval(trimmed) {
-            return Date(timeIntervalSince1970: seconds)
+            return dateFromEpoch(seconds)
         }
 
         return nil
+    }
+
+    private static func dateFromEpoch(_ secondsOrMilliseconds: TimeInterval) -> Date {
+        // Heuristic: values larger than year ~2286 in seconds are likely milliseconds.
+        if secondsOrMilliseconds > 10_000_000_000 {
+            return Date(timeIntervalSince1970: secondsOrMilliseconds / 1000)
+        }
+        return Date(timeIntervalSince1970: secondsOrMilliseconds)
     }
 }

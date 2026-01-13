@@ -4,9 +4,9 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
     nonisolated let providerID: ProviderID = .antigravity
 
     private let httpClient: HTTPClient
+    private let logger: FluxLogger
 
     private let tokenURL = URL(string: "https://oauth2.googleapis.com/token")
-    private let logger: FluxLogger
 
     private static let fetchAvailableModelsURLs: [URL] = [
         "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
@@ -23,21 +23,42 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
 
     private static let antigravityUserAgent = "antigravity/1.11.3 Darwin/arm64"
 
-    // Matches Quotio + CLIProxyAPI public constants.
     private static let oauthClientId = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
     private static let oauthClientSecret = "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"
 
-    init(httpClient: HTTPClient = .shared, logger: FluxLogger = .shared) {
+    private let cacheStore: AntigravityProjectCacheStore
+    private let urlSession: URLSession
+
+    private var subscriptionCache: [String: SubscriptionSnapshot] = [:]
+    private var projectIdCache: [String: AntigravityProjectCacheStore.ProjectCacheEntry] = [:]
+
+    init(
+        httpClient: HTTPClient = .shared,
+        logger: FluxLogger = .shared,
+        cacheStore: AntigravityProjectCacheStore = .shared,
+        urlSession: URLSession = .shared
+    ) {
         self.httpClient = httpClient
         self.logger = logger
+        self.cacheStore = cacheStore
+        self.urlSession = urlSession
+    }
+
+    // MARK: - Public
+
+    func beginRefreshCycle() async {
+        subscriptionCache = [:]
+        projectIdCache = await cacheStore.load()
     }
 
     func fetchQuotas(authFiles: [AuthFileInfo]) async -> [String: AccountQuota] {
+        await beginRefreshCycle()
+
         let now = Date()
         let candidates = authFiles.filter { $0.provider == .antigravity }
         guard !candidates.isEmpty else { return [:] }
 
-        await logger.debug("Antigravity: scanning \(candidates.count) auth file(s)", category: "Quota.Antigravity")
+        await logger.log(.debug, category: LogCategories.quotaAntigravity, metadata: ["authFiles": .int(candidates.count)], message: "scan auth files")
 
         var results: [String: AccountQuota] = [:]
         await withTaskGroup(of: (String, AccountQuota).self) { group in
@@ -53,73 +74,204 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
             }
         }
 
+        await cacheStore.save(projectIdCache)
         return results
     }
+
+    // MARK: - Result Types
+
+    enum QuotaFetchResult<Payload: Sendable>: Sendable {
+        case success(Payload)
+        case unauthorized
+        case forbidden
+        case rateLimited
+        case failed(String)
+    }
+
+    struct AntigravityAuthContext: Sendable {
+        let accountKey: String
+        let file: AuthFileInfo
+        var accessToken: String
+        var projectHint: String?
+        var resolvedProjectId: String?
+        var usedCachedPid: Bool
+        var didRefreshToken: Bool
+
+        init(accountKey: String, file: AuthFileInfo, accessToken: String) {
+            self.accountKey = accountKey
+            self.file = file
+            self.accessToken = accessToken
+            self.projectHint = nil
+            self.resolvedProjectId = nil
+            self.usedCachedPid = false
+            self.didRefreshToken = false
+        }
+    }
+
+    struct SubscriptionSnapshot: Sendable {
+        let tier: String?
+        let projectId: String?
+        let fetchedAt: Date
+    }
+
+    struct ProjectCacheEntry: Sendable {
+        let projectId: String
+        let source: AntigravityProjectCacheStore.ProjectCacheEntry.Source
+    }
+
+    // MARK: - Strongly typed responses
+
+    struct LoadCodeAssistResponse: Decodable, Sendable {
+        let cloudaicompanionProject: ProjectRef?
+        let currentTier: Tier?
+        let paidTier: Tier?
+        let userStatus: UserStatus?
+
+        struct Tier: Decodable, Sendable {
+            let id: String?
+            let name: String?
+        }
+
+        struct UserStatus: Decodable, Sendable {
+            let userTier: Tier?
+        }
+
+        struct ProjectRef: Decodable, Sendable {
+            let value: String?
+
+            init(from decoder: Decoder) throws {
+                if let string = try? decoder.singleValueContainer().decode(String.self) {
+                    let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.value = trimmed.isEmpty ? nil : trimmed
+                    return
+                }
+
+                let container = try decoder.singleValueContainer()
+                if let dict = try? container.decode([String: String].self) {
+                    let candidates = [dict["id"], dict["projectId"], dict["project"]]
+                    let extracted = candidates.compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.first { !$0.isEmpty }
+                    self.value = extracted
+                    return
+                }
+
+                self.value = nil
+            }
+        }
+
+        var extractedProjectId: String? {
+            cloudaicompanionProject?.value
+        }
+
+        var extractedTier: String? {
+            let paid = paidTier?.id ?? paidTier?.name
+            let current = currentTier?.id ?? currentTier?.name
+            let user = userStatus?.userTier?.id ?? userStatus?.userTier?.name
+            return paid ?? current ?? user
+        }
+    }
+
+    struct FetchAvailableModelsResponse: Decodable, Sendable {
+        let models: [String: ModelInfo]
+
+        struct ModelInfo: Decodable, Sendable {
+            let quotaInfo: QuotaInfo?
+
+            enum CodingKeys: String, CodingKey {
+                case quotaInfo
+                case quota_info
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                quotaInfo = (try? container.decode(QuotaInfo.self, forKey: .quotaInfo)) ?? (try? container.decode(QuotaInfo.self, forKey: .quota_info))
+            }
+        }
+
+        struct QuotaInfo: Decodable, Sendable {
+            let remainingFraction: Double?
+            let resetTime: String?
+
+            enum CodingKeys: String, CodingKey {
+                case remainingFraction
+                case remaining_fraction
+                case remaining
+                case resetTime
+                case reset_time
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+
+                let remainingRaw =
+                    (try? container.decode(Double.self, forKey: .remainingFraction))
+                    ?? (try? container.decode(Double.self, forKey: .remaining_fraction))
+                    ?? (try? container.decode(Double.self, forKey: .remaining))
+
+                if let remainingRaw {
+                    if remainingRaw > 1, remainingRaw <= 100 {
+                        remainingFraction = remainingRaw / 100.0
+                    } else {
+                        remainingFraction = min(1, max(0, remainingRaw))
+                    }
+                } else {
+                    remainingFraction = nil
+                }
+
+                resetTime =
+                    (try? container.decode(String.self, forKey: .resetTime))
+                    ?? (try? container.decode(String.self, forKey: .reset_time))
+            }
+        }
+    }
+
+    // MARK: - Core fetch per account
 
     private func fetchQuota(for file: AuthFileInfo, now: Date) async -> AccountQuota {
         let accountKey = normalizedAccountKey(file: file)
 
         var accessToken = file.accessToken
-        if shouldAttemptRefresh(file: file) {
-            if let refreshed = await refreshAccessToken(from: file) {
-                accessToken = refreshed
-            }
+
+        var context = AntigravityAuthContext(accountKey: accountKey, file: file, accessToken: accessToken)
+        context.projectHint = readProjectHint(filePath: file.filePath)
+
+        if let hint = context.projectHint {
+            await logger.log(.debug, category: LogCategories.quotaAntigravity, metadata: ["projectHint": .string(hint)], message: "found project hint")
         }
 
-        do {
-            let initialProjectHint = readProjectHint(filePath: file.filePath)
-            if let initialProjectHint {
-                await logger.debug("Antigravity: found project hint \(initialProjectHint)", category: "Quota.Antigravity")
-            }
+        // Note: token refresh is only forced on 401 by requirement, but we keep
+        // the existing pre-refresh logic as best effort (does not violate semantics).
+        if shouldAttemptRefresh(file: file), let refreshed = await refreshAccessToken(from: file) {
+            context.accessToken = refreshed
+        }
 
-            let subscription = await fetchSubscription(accessToken: accessToken, projectHint: initialProjectHint)
-            let planType = subscription.tier.map(mapPlanType) ?? .unknown
+        let result = await fetchQuotaResult(context: &context)
 
-            var quotaPayload: [String: Any] = [:]
-            let resolvedProjectId = (subscription.projectId ?? initialProjectHint)
-            if let projectId = resolvedProjectId, projectId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                quotaPayload["project"] = projectId
-            }
-
-            let json = try await fetchAvailableModels(
-                accessToken: accessToken,
-                payload: quotaPayload
-            )
-
-            let groupQuotas = buildGroupedModelQuotas(json: json)
-            if groupQuotas.isEmpty {
-                let keys = Array(json.keys).sorted().joined(separator: ", ")
-                await logger.warning("Antigravity: models parsed empty; top-level keys=[\(keys)]", category: "Quota.Antigravity")
-            }
-            let summary = summarize(groupQuotas)
-
+        switch result {
+        case .success(let payload):
             return AccountQuota(
                 accountKey: accountKey,
                 email: file.email,
                 kind: .ok,
-                quota: summary.metrics,
+                quota: payload.metrics,
                 lastUpdated: now,
                 message: nil,
                 error: nil,
-                planType: planType,
-                modelQuotas: groupQuotas
+                planType: payload.planType,
+                modelQuotas: payload.modelQuotas
             )
-        } catch let error as FluxError {
-            let kind: QuotaSnapshotKind = (error.code == .authError) ? .authMissing : .error
-            await logger.error("Antigravity: fetch failed (\(error.code.rawValue)) \(error.message) \(error.details ?? "")", category: "Quota.Antigravity")
+        case .unauthorized:
             return AccountQuota(
                 accountKey: accountKey,
                 email: file.email,
-                kind: kind,
+                kind: .authMissing,
                 quota: nil,
                 lastUpdated: now,
                 message: nil,
-                error: error.message,
+                error: "Request unauthorized".localizedStatic(),
                 planType: nil,
                 modelQuotas: []
             )
-        } catch {
-            await logger.error("Antigravity: fetch failed \(String(describing: error))", category: "Quota.Antigravity")
+        case .forbidden:
             return AccountQuota(
                 accountKey: accountKey,
                 email: file.email,
@@ -127,12 +279,347 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
                 quota: nil,
                 lastUpdated: now,
                 message: nil,
-                error: "Antigravity quota fetch failed".localizedStatic(),
+                error: "Account has no entitlement (403)".localizedStatic(),
+                planType: nil,
+                modelQuotas: []
+            )
+        case .rateLimited:
+            return AccountQuota(
+                accountKey: accountKey,
+                email: file.email,
+                kind: .error,
+                quota: nil,
+                lastUpdated: now,
+                message: nil,
+                error: "Request rate limited".localizedStatic(),
+                planType: nil,
+                modelQuotas: []
+            )
+        case .failed(let message):
+            return AccountQuota(
+                accountKey: accountKey,
+                email: file.email,
+                kind: .error,
+                quota: nil,
+                lastUpdated: now,
+                message: nil,
+                error: message,
                 planType: nil,
                 modelQuotas: []
             )
         }
     }
+
+    private struct QuotaPayload: Sendable {
+        let planType: AccountPlanType?
+        let modelQuotas: [ModelQuota]
+        let metrics: QuotaMetrics?
+    }
+
+    private func fetchQuotaResult(context: inout AntigravityAuthContext) async -> QuotaFetchResult<QuotaPayload> {
+        // Resolve subscription/projectId with cache priority:
+        // subscriptionCache > persistent project cache > authFileHint > loadCodeAssist
+        let subscription = await resolveSubscriptionSnapshot(context: &context)
+
+        let planType = subscription?.tier.map(mapPlanType) ?? .unknown
+
+        var pidToUse: String?
+        var usedCachedPid = false
+
+        if let subscription, let pid = subscription.projectId {
+            pidToUse = pid
+            usedCachedPid = true
+        } else if let cached = projectIdCache[context.accountKey] {
+            pidToUse = cached.projectId
+            usedCachedPid = true
+            await logger.debug("Antigravity: hit persistent project cache", category: "Quota.Antigravity")
+        } else if let hint = context.projectHint {
+            pidToUse = hint
+            usedCachedPid = false
+        }
+
+        context.resolvedProjectId = pidToUse
+        context.usedCachedPid = usedCachedPid
+
+        var payload: [String: Any] = [:]
+        if let pidToUse, !pidToUse.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            payload["project"] = pidToUse
+        }
+
+        // 1st attempt: fetchAvailableModels with fallback endpoints
+        let firstFetch = await fetchAvailableModelsWithFallback(accessToken: context.accessToken, payload: payload)
+
+        switch firstFetch {
+        case .success(let response):
+            return .success(buildPayload(from: response, planType: planType))
+        case .unauthorized:
+            // Requirement: 401 triggers refresh if refreshToken exists; retry once.
+            guard let refreshed = await refreshAccessToken(from: context.file) else {
+                return .unauthorized
+            }
+            context.accessToken = refreshed
+            context.didRefreshToken = true
+
+            let retry = await fetchAvailableModelsWithFallback(accessToken: context.accessToken, payload: payload)
+            switch retry {
+            case .success(let response):
+                return .success(buildPayload(from: response, planType: planType))
+            case .forbidden:
+                return await handleForbiddenAfterFetch(context: &context, usedCachedPid: usedCachedPid, payload: payload, planType: planType)
+            case .rateLimited:
+                return .rateLimited
+            case .unauthorized:
+                return .unauthorized
+            case .failed(let message):
+                return .failed(message)
+            }
+        case .forbidden:
+            return await handleForbiddenAfterFetch(context: &context, usedCachedPid: usedCachedPid, payload: payload, planType: planType)
+        case .rateLimited:
+            return .rateLimited
+        case .failed(let message):
+            return .failed(message)
+        }
+    }
+
+    private func handleForbiddenAfterFetch(
+        context: inout AntigravityAuthContext,
+        usedCachedPid: Bool,
+        payload: [String: Any],
+        planType: AccountPlanType?
+    ) async -> QuotaFetchResult<QuotaPayload> {
+        // 403 fallback rule:
+        // If we used persistent cached projectId and got 403, refresh projectId via loadCodeAssist and retry once.
+        guard usedCachedPid else {
+            return .forbidden
+        }
+
+        await logger.warning("Antigravity: 403 with cached projectId, retrying loadCodeAssist", category: "Quota.Antigravity")
+
+        let refreshedSubscription = await fetchSubscriptionSnapshot(accessToken: context.accessToken, projectHint: context.projectHint)
+        if let refreshedSubscription, let newPid = refreshedSubscription.projectId {
+            projectIdCache[context.accountKey] = AntigravityProjectCacheStore.ProjectCacheEntry(
+                projectId: newPid,
+                ttlSeconds: 7 * 24 * 60 * 60,
+                updatedAt: Date(),
+                source: .loadCodeAssist
+            )
+
+            var retryPayload = payload
+            retryPayload["project"] = newPid
+
+            let retry = await fetchAvailableModelsWithFallback(accessToken: context.accessToken, payload: retryPayload)
+            switch retry {
+            case .success(let response):
+                return .success(buildPayload(from: response, planType: planType))
+            case .unauthorized:
+                return .unauthorized
+            case .forbidden:
+                return .forbidden
+            case .rateLimited:
+                return .rateLimited
+            case .failed(let message):
+                return .failed(message)
+            }
+        }
+
+        return .forbidden
+    }
+
+    // MARK: - Subscription & caches
+
+    private func resolveSubscriptionSnapshot(context: inout AntigravityAuthContext) async -> SubscriptionSnapshot? {
+        if let cached = subscriptionCache[context.accountKey] {
+            return cached
+        }
+
+        if let persistent = projectIdCache[context.accountKey] {
+            let snapshot = SubscriptionSnapshot(tier: nil, projectId: persistent.projectId, fetchedAt: persistent.updatedAt)
+            subscriptionCache[context.accountKey] = snapshot
+            await logger.debug("Antigravity: using persisted projectId cache", category: "Quota.Antigravity")
+            return snapshot
+        }
+
+        if let hint = context.projectHint {
+            let snapshot = SubscriptionSnapshot(tier: nil, projectId: hint, fetchedAt: Date())
+            subscriptionCache[context.accountKey] = snapshot
+            return snapshot
+        }
+
+        if let fetched = await fetchSubscriptionSnapshot(accessToken: context.accessToken, projectHint: nil) {
+            subscriptionCache[context.accountKey] = fetched
+            if let pid = fetched.projectId {
+                projectIdCache[context.accountKey] = AntigravityProjectCacheStore.ProjectCacheEntry(
+                    projectId: pid,
+                    ttlSeconds: 7 * 24 * 60 * 60,
+                    updatedAt: Date(),
+                    source: .loadCodeAssist
+                )
+            }
+            return fetched
+        }
+
+        return nil
+    }
+
+    private func fetchSubscriptionSnapshot(accessToken: String, projectHint: String?) async -> SubscriptionSnapshot? {
+        let payload = buildLoadCodeAssistPayload(projectHint: projectHint)
+
+        let decoder = JSONDecoder()
+
+        let result: QuotaFetchResult<LoadCodeAssistResponse> = await performWithFallback(
+            urls: Self.loadCodeAssistURLs,
+            requestBuilder: { url in
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 15
+                request.httpBody = payload
+                request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+                request.setValue(Self.antigravityUserAgent, forHTTPHeaderField: "User-Agent")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                return request
+            },
+            decoder: decoder
+        )
+
+        switch result {
+        case .success(let response):
+            let snapshot = SubscriptionSnapshot(tier: response.extractedTier, projectId: response.extractedProjectId, fetchedAt: Date())
+            if let pid = snapshot.projectId {
+                projectIdCache["unknown"] = projectIdCache["unknown"]
+                // Persist per-account project id is handled by resolveSubscriptionSnapshot (accountKey aware).
+                _ = pid
+            }
+            return snapshot
+        default:
+            return nil
+        }
+    }
+
+    private func buildLoadCodeAssistPayload(projectHint: String?) -> Data {
+        var metadata: [String: Any] = [
+            "ideType": "ANTIGRAVITY",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        ]
+
+        var payload: [String: Any] = ["metadata": metadata]
+        if let projectHint, projectHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            payload["cloudaicompanionProject"] = projectHint
+            metadata["duetProject"] = projectHint
+            payload["metadata"] = metadata
+        }
+
+        return (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data("{}".utf8)
+    }
+
+    // MARK: - Requests with fallback
+
+    private func fetchAvailableModelsWithFallback(accessToken: String, payload: [String: Any]) async -> QuotaFetchResult<FetchAvailableModelsResponse> {
+        let body = (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data("{}".utf8)
+        let decoder = JSONDecoder()
+
+        return await performWithFallback(
+            urls: Self.fetchAvailableModelsURLs,
+            requestBuilder: { url in
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 15
+                request.httpBody = body
+                request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+                request.setValue(Self.antigravityUserAgent, forHTTPHeaderField: "User-Agent")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                return request
+            },
+            decoder: decoder
+        )
+    }
+
+    private func performWithFallback<Response: Decodable & Sendable>(
+        urls: [URL],
+        requestBuilder: @Sendable (URL) -> URLRequest,
+        decoder: JSONDecoder
+    ) async -> QuotaFetchResult<Response> {
+        var lastRateLimited: Bool = false
+        var lastMessage: String?
+
+        for url in urls {
+            let request = requestBuilder(url)
+            do {
+                let (data, response) = try await urlSession.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    lastMessage = "Invalid HTTP response".localizedStatic()
+                    continue
+                }
+
+                let status = http.statusCode
+
+                if status == 401 {
+                    return .unauthorized
+                }
+                if status == 403 {
+                    return .forbidden
+                }
+                if status == 429 {
+                    lastRateLimited = true
+                    lastMessage = "Request rate limited".localizedStatic()
+                    continue
+                }
+                if (500...599).contains(status) {
+                    lastMessage = "HTTP request failed".localizedStatic()
+                    continue
+                }
+                guard (200...299).contains(status) else {
+                    lastMessage = "HTTP request failed".localizedStatic()
+                    continue
+                }
+
+                do {
+                    let decoded = try decoder.decode(Response.self, from: data)
+                    return .success(decoded)
+                } catch {
+                    lastMessage = "Failed to parse response".localizedStatic()
+                    continue
+                }
+            } catch {
+                lastMessage = "Network request failed".localizedStatic()
+                continue
+            }
+        }
+
+        if lastRateLimited {
+            return .rateLimited
+        }
+        return .failed(lastMessage ?? "Antigravity request failed".localizedStatic())
+    }
+
+    // MARK: - Build payload / grouping (preserved)
+
+    private func buildPayload(from response: FetchAvailableModelsResponse, planType: AccountPlanType?) -> QuotaPayload {
+        let json = convertToLegacyJSON(response)
+        let groupQuotas = buildGroupedModelQuotas(json: json)
+        let summary = summarize(groupQuotas)
+        return QuotaPayload(planType: planType, modelQuotas: groupQuotas, metrics: summary.metrics)
+    }
+
+    private func convertToLegacyJSON(_ response: FetchAvailableModelsResponse) -> [String: Any] {
+        var models: [String: Any] = [:]
+        for (modelId, info) in response.models {
+            var modelDict: [String: Any] = [:]
+            if let quotaInfo = info.quotaInfo {
+                var qi: [String: Any] = [:]
+                if let fraction = quotaInfo.remainingFraction { qi["remainingFraction"] = fraction }
+                if let reset = quotaInfo.resetTime { qi["resetTime"] = reset }
+                modelDict["quotaInfo"] = qi
+            }
+            models[modelId] = modelDict
+        }
+        return ["models": models]
+    }
+
+    // MARK: - Existing helpers preserved (token refresh + grouping)
 
     private func shouldAttemptRefresh(file: AuthFileInfo) -> Bool {
         guard file.refreshToken != nil else { return false }
@@ -193,49 +680,12 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
         return (clientId?.trimmingCharacters(in: .whitespacesAndNewlines), clientSecret?.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
-    private func extractWorstRemaining(json: [String: Any]) -> (percentRemaining: Double?, resetAt: Date?) {
-        guard let models = json["models"] as? [String: Any] else { return (nil, nil) }
-
-        var minFraction: Double?
-        var earliestReset: Date?
-
-        for (_, value) in models {
-            guard let modelDict = value as? [String: Any] else { continue }
-            guard let quotaInfo = modelDict["quotaInfo"] as? [String: Any] ?? modelDict["quota_info"] as? [String: Any] else { continue }
-
-            let remainingFraction = parseDouble(quotaInfo["remainingFraction"] ?? quotaInfo["remaining_fraction"])
-            if let remainingFraction {
-                minFraction = min(minFraction ?? remainingFraction, remainingFraction)
-            }
-
-            if let resetString = quotaInfo["resetTime"] as? String ?? quotaInfo["reset_time"] as? String,
-               let resetDate = parseISO8601Date(resetString) {
-                earliestReset = min(earliestReset ?? resetDate, resetDate)
-            }
-        }
-
-        if let minFraction {
-            return (percentRemaining: minFraction * 100.0, resetAt: earliestReset)
-        }
-        return (nil, earliestReset)
-    }
-
     private func parseDouble(_ value: Any?) -> Double? {
         if let double = value as? Double { return double }
         if let int = value as? Int { return Double(int) }
         if let number = value as? NSNumber { return number.doubleValue }
         if let string = value as? String, let double = Double(string) { return double }
         return nil
-    }
-
-    private func parseISO8601Date(_ string: String) -> Date? {
-        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: trimmed) { return date }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: trimmed)
     }
 
     private func formEncode(_ value: String) -> String {
@@ -273,122 +723,25 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
             try updated.write(to: url, options: [.atomic])
             try? FileManager.default.setAttributes([.posixPermissions: NSNumber(value: 0o600)], ofItemAtPath: url.path)
         } catch {
-            // Best-effort persistence; quota fetching still works with in-memory token.
+            // Best-effort persistence.
         }
     }
 
-    private struct SubscriptionResult: Sendable {
-        let tier: String?
-        let projectId: String?
-    }
+    private func readProjectHint(filePath: String) -> String? {
+        guard let data = FileManager.default.contents(atPath: filePath) else { return nil }
+        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
 
-    private func fetchSubscription(accessToken: String) async -> SubscriptionResult {
-        await fetchSubscription(accessToken: accessToken, projectHint: nil)
-    }
-
-    private func fetchSubscription(accessToken: String, projectHint: String?) async -> SubscriptionResult {
-        var metadata: [String: Any] = [
-            "ideType": "ANTIGRAVITY",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
+        let candidates: [Any?] = [
+            json["project"],
+            json["projectId"],
+            json["project_id"],
+            json["cloudaicompanionProject"],
+            json["cloudaicompanion_project"],
         ]
-
-        var payload: [String: Any] = ["metadata": metadata]
-        if let projectHint, projectHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-            payload["cloudaicompanionProject"] = projectHint
-            metadata["duetProject"] = projectHint
-            payload["metadata"] = metadata
+        for candidate in candidates {
+            if let extracted = extractProjectId(candidate) { return extracted }
         }
-
-        guard let body = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
-            return SubscriptionResult(tier: nil, projectId: nil)
-        }
-
-        for url in Self.loadCodeAssistURLs {
-            do {
-                await logger.debug("Antigravity: loadCodeAssist -> \(url.absoluteString)", category: "Quota.Antigravity")
-                let data = try await httpClient.post(
-                    url: url,
-                    body: body,
-                    headers: [
-                        "Authorization": "Bearer \(accessToken)",
-                        "User-Agent": Self.antigravityUserAgent,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    ]
-                )
-
-                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    await logger.warning("Antigravity: loadCodeAssist parse failed \(url.absoluteString)", category: "Quota.Antigravity")
-                    continue
-                }
-
-                let projectId = extractProjectId(json["cloudaicompanionProject"] ?? json["cloudaicompanion_project"])
-
-                let paidTier = json["paidTier"] as? [String: Any]
-                let currentTier = json["currentTier"] as? [String: Any]
-                let userStatus = json["userStatus"] as? [String: Any]
-                let userTier = userStatus?["userTier"] as? [String: Any]
-
-                let tierId =
-                    (paidTier?["id"] as? String)
-                    ?? (currentTier?["id"] as? String)
-                    ?? (userTier?["id"] as? String)
-                let tierName =
-                    (paidTier?["name"] as? String)
-                    ?? (currentTier?["name"] as? String)
-                    ?? (userTier?["name"] as? String)
-
-                let tier = tierId ?? tierName
-
-                await logger.debug("Antigravity: loadCodeAssist ok tier=\(tier ?? "nil") projectId=\(projectId ?? "nil")", category: "Quota.Antigravity")
-                return SubscriptionResult(tier: tier, projectId: projectId)
-            } catch let error as FluxError {
-                await logger.warning("Antigravity: loadCodeAssist failed \(url.absoluteString) (\(error.code.rawValue)) \(error.message) \(error.details ?? "")", category: "Quota.Antigravity")
-                continue
-            } catch {
-                await logger.warning("Antigravity: loadCodeAssist failed \(url.absoluteString) \(String(describing: error))", category: "Quota.Antigravity")
-                continue
-            }
-        }
-
-        return SubscriptionResult(tier: nil, projectId: nil)
-    }
-
-    private func fetchAvailableModels(accessToken: String, payload: [String: Any]) async throws -> [String: Any] {
-        let body = try JSONSerialization.data(withJSONObject: payload, options: [])
-
-        var lastError: FluxError?
-        for url in Self.fetchAvailableModelsURLs {
-            do {
-                await logger.debug("Antigravity: fetchAvailableModels -> \(url.absoluteString) payloadKeys=\(payload.keys.sorted())", category: "Quota.Antigravity")
-                let data = try await httpClient.post(
-                    url: url,
-                    body: body,
-                    headers: [
-                        "Authorization": "Bearer \(accessToken)",
-                        "User-Agent": Self.antigravityUserAgent,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    ]
-                )
-                guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                    await logger.warning("Antigravity: fetchAvailableModels parse failed \(url.absoluteString)", category: "Quota.Antigravity")
-                    continue
-                }
-                return json
-            } catch let error as FluxError {
-                lastError = error
-                await logger.warning("Antigravity: fetchAvailableModels failed \(url.absoluteString) (\(error.code.rawValue)) \(error.message) \(error.details ?? "")", category: "Quota.Antigravity")
-                continue
-            } catch {
-                await logger.warning("Antigravity: fetchAvailableModels failed \(url.absoluteString) \(String(describing: error))", category: "Quota.Antigravity")
-                continue
-            }
-        }
-
-        if let lastError { throw lastError }
-        throw FluxError(code: .networkError, message: "Antigravity request failed", details: "No available endpoint succeeded")
+        return nil
     }
 
     private func extractProjectId(_ raw: Any?) -> String? {
@@ -413,33 +766,7 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
         return nil
     }
 
-    private func readProjectHint(filePath: String) -> String? {
-        guard let data = FileManager.default.contents(atPath: filePath) else { return nil }
-        guard let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
-
-        let candidates: [Any?] = [
-            json["project"],
-            json["projectId"],
-            json["project_id"],
-            json["cloudaicompanionProject"],
-            json["cloudaicompanion_project"],
-        ]
-        for candidate in candidates {
-            if let extracted = extractProjectId(candidate) { return extracted }
-        }
-        return nil
-    }
-
-    private func mapPlanType(_ value: String) -> AccountPlanType {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if normalized.isEmpty { return .unknown }
-        if normalized.contains("enterprise") { return .enterprise }
-        if normalized.contains("team") { return .team }
-        if normalized.contains("pro") || normalized.contains("ultra") { return .pro }
-        if normalized.contains("plus") { return .plus }
-        if normalized.contains("free") || normalized.contains("guest") { return .free }
-        return .unknown
-    }
+    // MARK: - Grouping logic preserved from previous implementation
 
     private struct GroupAccumulator {
         var minRemainingFraction: Double?
@@ -584,5 +911,26 @@ actor AntigravityQuotaFetcher: QuotaFetcher {
             unit: .credits
         )
         return SummaryResult(metrics: metrics)
+    }
+
+    private func parseISO8601Date(_ string: String) -> Date? {
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: trimmed) { return date }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: trimmed)
+    }
+
+    private func mapPlanType(_ value: String) -> AccountPlanType {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized.isEmpty { return .unknown }
+        if normalized.contains("enterprise") { return .enterprise }
+        if normalized.contains("team") { return .team }
+        if normalized.contains("pro") || normalized.contains("ultra") { return .pro }
+        if normalized.contains("plus") { return .plus }
+        if normalized.contains("free") || normalized.contains("guest") { return .free }
+        return .unknown
     }
 }

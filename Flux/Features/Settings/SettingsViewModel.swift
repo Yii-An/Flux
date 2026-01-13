@@ -68,6 +68,7 @@ final class SettingsViewModel {
         }
 
         LanguageManager.shared.setLanguage(settings.language)
+        await FluxLogger.shared.updateConfig(settings.logConfig)
         await UpdateService.shared.applySettings(settings)
     }
 
@@ -110,6 +111,8 @@ final class SettingsViewModel {
             try await settingsStore.save(settings)
             LanguageManager.shared.setLanguage(settings.language)
             await UpdateService.shared.applySettings(settings)
+            await FluxLogger.shared.updateConfig(settings.logConfig)
+            await QuotaRefreshScheduler.shared.updateInterval(settings.refreshIntervalSeconds)
             try await launchAtLoginManager.setEnabled(false)
         } catch {
             errorMessage = String(describing: error)
@@ -147,13 +150,19 @@ final class SettingsViewModel {
         errorMessage = nil
 
         settings.startAtLogin = launchAtLogin
-        settings.refreshIntervalSeconds = max(5, settings.refreshIntervalSeconds)
+        if settings.refreshIntervalSeconds <= 0 {
+            settings.refreshIntervalSeconds = 0
+        } else {
+            settings.refreshIntervalSeconds = max(60, settings.refreshIntervalSeconds)
+        }
         settings.keepCoreVersions = min(2, max(1, settings.keepCoreVersions))
 
         do {
             try await settingsStore.save(settings)
             LanguageManager.shared.setLanguage(settings.language)
+            await FluxLogger.shared.updateConfig(settings.logConfig)
             await UpdateService.shared.applySettings(settings)
+            await QuotaRefreshScheduler.shared.updateInterval(settings.refreshIntervalSeconds)
 
             try await launchAtLoginManager.setEnabled(launchAtLogin)
         } catch {
@@ -168,6 +177,10 @@ final class SettingsViewModel {
             suppressAutosave = false
             try? await settingsStore.save(settings)
         }
+    }
+
+    func refreshCoreStatus() async {
+        await refreshCoreInfo()
     }
 
     private func refreshCoreInfo() async {

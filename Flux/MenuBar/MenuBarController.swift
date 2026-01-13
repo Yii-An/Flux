@@ -2,11 +2,10 @@ import Cocoa
 import SwiftUI
 
 @MainActor
-class MenuBarController: NSObject {
-    private var statusItem: NSStatusItem?
-    private var popover: NSPopover?
-    private let statusMenu = NSMenu()
-    private var fallbackWindow: NSWindow?
+	class MenuBarController: NSObject {
+	    private var statusItem: NSStatusItem?
+	    private var popover: NSPopover?
+	    private let statusMenu = NSMenu()
 
     private let quotaAggregator: QuotaAggregator
     private let coreManager: CoreManager
@@ -138,34 +137,25 @@ class MenuBarController: NSObject {
         openMainWindow()
     }
 
-    private func openMainWindow(navigateTo page: NavigationPage? = nil) {
-        popover?.performClose(nil)
-        NSApp.activate(ignoringOtherApps: true)
+	    private func openMainWindow(navigateTo page: NavigationPage? = nil) {
+	        popover?.performClose(nil)
+	        NSApp.unhide(nil)
+	        NSApp.activate(ignoringOtherApps: true)
 
-        if let existing = NSApp.windows.first(where: { window in
-            guard window.isVisible, window.canBecomeKey else { return false }
-            if let popoverWindow = popover?.contentViewController?.view.window, window === popoverWindow { return false }
-            return true
-        }) {
-            existing.makeKeyAndOrderFront(nil)
-        } else {
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 980, height: 720),
-                styleMask: [.titled, .closable, .miniaturizable, .resizable],
-                backing: .buffered,
-                defer: false
-            )
-            window.center()
-            window.title = "Flux"
-            window.contentView = NSHostingView(rootView: FluxRootContainerView(initialPage: page ?? .dashboard))
-            window.makeKeyAndOrderFront(nil)
-            fallbackWindow = window
-        }
+	        if let window = NSApplication.shared.windows.first(where: { window in
+	            window.title == "Flux" && window.canBecomeKey
+	        }) {
+	            if window.isMiniaturized {
+	                window.deminiaturize(nil)
+	            }
+	            window.makeKeyAndOrderFront(nil)
+	            window.orderFrontRegardless()
+	        }
 
         if let page {
             FluxNavigation.navigate(to: page)
         }
-    }
+	    }
 
     @objc private func refreshQuota() {
         Task { [quotaAggregator] in

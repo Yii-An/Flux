@@ -7,6 +7,7 @@ actor CoreManager {
     private let coreProcess: CoreProcess
     private let healthChecker: CoreHealthChecker
     private let settingsStore: SettingsStore
+    private let logger: FluxLogger
 
     private let fileManager: FileManager
 
@@ -25,12 +26,14 @@ actor CoreManager {
         coreProcess: CoreProcess = .shared,
         healthChecker: CoreHealthChecker = .shared,
         settingsStore: SettingsStore = .shared,
+        logger: FluxLogger = .shared,
         fileManager: FileManager = .default
     ) {
         self.versionManager = versionManager
         self.coreProcess = coreProcess
         self.healthChecker = healthChecker
         self.settingsStore = settingsStore
+        self.logger = logger
         self.fileManager = fileManager
     }
 
@@ -70,6 +73,8 @@ actor CoreManager {
             break
         }
 
+        await logger.log(.info, category: LogCategories.core, metadata: ["port": .int(Int(corePort))], message: "start requested")
+
         runtimeState = .starting
         healthCheckFailures = 0
         startedAt = nil
@@ -79,6 +84,7 @@ actor CoreManager {
             guard let binaryURL = try await versionManager.activeBinaryURL() else {
                 runtimeState = .notInstalled
                 startedAt = nil
+                await logger.log(.warning, category: LogCategories.core, message: "core not installed")
                 return
             }
 
@@ -93,14 +99,18 @@ actor CoreManager {
             runtimeState = .running(pid: pid)
             startHealthMonitor()
 
+            await logger.log(.info, category: LogCategories.core, metadata: ["pid": .int(Int(pid)), "port": .int(Int(corePort))], message: "core started")
+
             let keepCount = await loadKeepCoreVersions()
             try? await versionManager.pruneVersions(keeping: keepCount)
         } catch let error as FluxError {
             runtimeState = .error(error)
             startedAt = nil
+            await logger.log(.error, category: LogCategories.core, metadata: ["code": .string(error.code.rawValue)], message: "start failed: \(error.message) \(error.details ?? "")")
         } catch {
             runtimeState = .error(FluxError(code: .coreStartFailed, message: "Failed to start core", details: String(describing: error)))
             startedAt = nil
+            await logger.log(.error, category: LogCategories.core, message: "start failed: \(String(describing: error))")
         }
     }
 
@@ -115,13 +125,16 @@ actor CoreManager {
         }
 
         runtimeState = .stopping
+        await logger.log(.info, category: LogCategories.core, message: "stop requested")
         await coreProcess.stop()
         runtimeState = .stopped
         healthCheckFailures = 0
         startedAt = nil
+        await logger.log(.info, category: LogCategories.core, message: "core stopped")
     }
 
     func restart() async {
+        await logger.log(.info, category: LogCategories.core, message: "restart requested")
         await stop()
         await start()
     }
@@ -185,6 +198,7 @@ actor CoreManager {
         }
 
         healthCheckFailures += 1
+        await logger.log(.warning, category: LogCategories.core, metadata: ["failures": .int(healthCheckFailures)], message: "health check failed")
         if healthCheckFailures < maxHealthCheckFailures {
             return
         }

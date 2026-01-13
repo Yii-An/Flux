@@ -25,6 +25,10 @@ final class DashboardViewModel {
     var providerItems: [ProviderStatusItem] = []
     var agentItems: [AgentIntegrationItem] = []
 
+    var coreNotInstalled: Bool = false
+    var coreUpdateAvailable: Bool = false
+    var coreLatestVersion: String?
+
     var isRefreshing: Bool = false
     var errorMessage: String?
 
@@ -51,6 +55,7 @@ final class DashboardViewModel {
         defer { isRefreshing = false }
 
         await refreshCoreMetadata()
+        await refreshCorePromptState()
 
         let previousQuotaProvidersCount = quotaProvidersCount
         let previousCredentialsAvailableCount = credentialsAvailableCount
@@ -224,6 +229,43 @@ final class DashboardViewModel {
         coreStartedAt = await coreManager.startedAtDate()
         coreVersion = (try? await CoreVersionManager.shared.activeVersion())?.version
         corePort = await coreManager.port()
+    }
+
+    private func refreshCorePromptState() async {
+        let binaryURL = try? await CoreVersionManager.shared.activeBinaryURL()
+        if binaryURL == nil {
+            coreNotInstalled = true
+        } else if case .notInstalled = coreState {
+            coreNotInstalled = true
+        } else {
+            coreNotInstalled = false
+        }
+
+        guard !coreNotInstalled else {
+            coreLatestVersion = nil
+            coreUpdateAvailable = false
+            return
+        }
+
+        do {
+            let releases = try await CoreDownloader.shared.fetchAvailableReleases()
+            guard let latest = releases.max(by: { $0.publishedAt < $1.publishedAt }) else {
+                coreLatestVersion = nil
+                coreUpdateAvailable = false
+                return
+            }
+
+            coreLatestVersion = latest.tagName
+
+            if let current = coreVersion, !current.isEmpty, current != "custom" {
+                coreUpdateAvailable = (current != latest.tagName)
+            } else {
+                coreUpdateAvailable = false
+            }
+        } catch {
+            coreLatestVersion = nil
+            coreUpdateAvailable = false
+        }
     }
 
     private func trend(for value: Int, comparedTo previous: Int) -> MetricTrend {
