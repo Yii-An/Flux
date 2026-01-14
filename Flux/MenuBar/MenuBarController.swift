@@ -8,7 +8,7 @@ import SwiftUI
 	    private let statusMenu = NSMenu()
 
     private let quotaAggregator: QuotaAggregator
-    private let coreManager: CoreManager
+    private let coreOrchestrator: CoreOrchestrator
 
     private var openItem: NSMenuItem?
     private var refreshQuotaItem: NSMenuItem?
@@ -17,9 +17,9 @@ import SwiftUI
     private var stopCoreItem: NSMenuItem?
     private var quitItem: NSMenuItem?
 
-    init(quotaAggregator: QuotaAggregator = .shared, coreManager: CoreManager = .shared) {
+    init(quotaAggregator: QuotaAggregator = .shared, coreOrchestrator: CoreOrchestrator = .shared) {
         self.quotaAggregator = quotaAggregator
-        self.coreManager = coreManager
+        self.coreOrchestrator = coreOrchestrator
         super.init()
         setupStatusBar()
     }
@@ -139,22 +139,7 @@ import SwiftUI
 
 	    private func openMainWindow(navigateTo page: NavigationPage? = nil) {
 	        popover?.performClose(nil)
-	        NSApp.unhide(nil)
-	        NSApp.activate(ignoringOtherApps: true)
-
-	        if let window = NSApplication.shared.windows.first(where: { window in
-	            window.title == "Flux" && window.canBecomeKey
-	        }) {
-	            if window.isMiniaturized {
-	                window.deminiaturize(nil)
-	            }
-	            window.makeKeyAndOrderFront(nil)
-	            window.orderFrontRegardless()
-	        }
-
-        if let page {
-            FluxNavigation.navigate(to: page)
-        }
+	        WindowPolicyManager.shared.openMainWindow(navigateTo: page)
 	    }
 
     @objc private func refreshQuota() {
@@ -164,14 +149,14 @@ import SwiftUI
     }
 
     @objc private func startCore() {
-        Task { [coreManager] in
-            await coreManager.start()
+        Task { [coreOrchestrator] in
+            await coreOrchestrator.start()
         }
     }
 
     @objc private func stopCore() {
-        Task { [coreManager] in
-            await coreManager.stop()
+        Task { [coreOrchestrator] in
+            await coreOrchestrator.stop()
         }
     }
 
@@ -182,6 +167,6 @@ import SwiftUI
     }
 
     @objc private func quit() {
-        NSApp.terminate(nil)
+        WindowPolicyManager.shared.requestQuit()
     }
 }

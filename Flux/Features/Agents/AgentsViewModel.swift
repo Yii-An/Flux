@@ -12,18 +12,18 @@ final class AgentsViewModel {
     var isRefreshing: Bool = false
     var errorMessage: String?
 
-    private let coreManager: CoreManager
+    private let coreOrchestrator: CoreOrchestrator
     private let settingsStore: SettingsStore
     private let discoveryService: AgentDiscoveryService
     private let cliExecutor: CLIExecutor
 
     init(
-        coreManager: CoreManager = .shared,
+        coreOrchestrator: CoreOrchestrator = .shared,
         settingsStore: SettingsStore = .shared,
         discoveryService: AgentDiscoveryService = .shared,
         cliExecutor: CLIExecutor = .shared
     ) {
-        self.coreManager = coreManager
+        self.coreOrchestrator = coreOrchestrator
         self.settingsStore = settingsStore
         self.discoveryService = discoveryService
         self.cliExecutor = cliExecutor
@@ -36,7 +36,7 @@ final class AgentsViewModel {
 
         errorMessage = nil
 
-        coreState = await coreManager.state()
+        coreState = await coreOrchestrator.runtimeState()
         let settings: AppSettings
         do {
             settings = try await settingsStore.load()
@@ -50,7 +50,7 @@ final class AgentsViewModel {
     }
 
     func startCore() async {
-        await coreManager.start()
+        await coreOrchestrator.start()
         await refresh(forceRefresh: true)
     }
 

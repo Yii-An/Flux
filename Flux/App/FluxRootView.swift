@@ -1,10 +1,18 @@
 import SwiftUI
 
 struct FluxRootView: View {
+    @Environment(\.openWindow) private var openWindow
     @Binding var currentPage: NavigationPage
     @State private var languageManager = LanguageManager.shared
     @State private var coreState: CoreRuntimeState = .stopped
     @State private var coreVersion: String?
+    @State private var dashboardViewModel = DashboardViewModel()
+    @State private var quotaViewModel = QuotaViewModel()
+    @State private var logsViewModel = LogsViewModel()
+    @State private var providersViewModel = ProvidersViewModel()
+    @State private var agentsViewModel = AgentsViewModel()
+    @State private var apiKeysViewModel = APIKeysViewModel()
+    @State private var settingsViewModel = SettingsViewModel()
 
     var body: some View {
         NavigationSplitView {
@@ -47,6 +55,7 @@ struct FluxRootView: View {
         .environment(\.locale, languageManager.locale)
         .frame(minWidth: 1100, minHeight: 700)
         .task {
+            await WindowPolicyManager.shared.registerOpenWindow(openWindow)
             await refreshCoreStatus()
         }
         .onReceive(NotificationCenter.default.publisher(for: FluxNavigation.notification)) { notification in
@@ -61,34 +70,38 @@ struct FluxRootView: View {
     private func detailView(for page: NavigationPage) -> some View {
         switch page {
         case .dashboard:
-            DashboardView()
+            DashboardView(viewModel: dashboardViewModel)
         case .quota:
-            QuotaView()
+            QuotaView(viewModel: quotaViewModel)
         case .logs:
-            LogsView()
+            LogsView(viewModel: logsViewModel)
         case .providers:
-            ProvidersView()
+            ProvidersView(viewModel: providersViewModel)
         case .agents:
-            AgentsView()
+            AgentsView(viewModel: agentsViewModel)
         case .apiKeys:
-            APIKeysView()
+            APIKeysView(viewModel: apiKeysViewModel)
         case .settings:
-            SettingsView()
+            SettingsView(viewModel: settingsViewModel)
         }
 }
 
     private func refreshCoreStatus() async {
-        coreState = await CoreManager.shared.state()
-        coreVersion = (try? await CoreVersionManager.shared.activeVersion())?.version
+        coreState = await CoreOrchestrator.shared.runtimeState()
+        if let version = try? await CoreStorage.shared.currentVersion() {
+            coreVersion = version
+        } else {
+            coreVersion = nil
+        }
     }
 
     private func toggleCore() async {
-        let manager = CoreManager.shared
-        let state = await manager.state()
+        let orchestrator = CoreOrchestrator.shared
+        let state = await orchestrator.runtimeState()
         if state.isRunning {
-            await manager.stop()
+            await orchestrator.stop()
         } else {
-            await manager.start()
+            await orchestrator.start()
         }
         await refreshCoreStatus()
     }

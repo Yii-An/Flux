@@ -9,6 +9,9 @@ enum FluxErrorCode: String, Codable, Sendable {
     case unsupported
     case coreStartFailed
     case coreStopFailed
+    case coreBinaryInvalidFormat
+    case coreBinaryArchMismatch
+    case rosettaRequired
     case unknown
 }
 

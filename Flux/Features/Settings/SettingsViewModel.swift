@@ -25,8 +25,8 @@ final class SettingsViewModel {
 
     private let settingsStore: SettingsStore
     private let launchAtLoginManager: LaunchAtLoginManager
-    private let coreManager: CoreManager
-    private let versionManager: CoreVersionManager
+    private let coreOrchestrator: CoreOrchestrator
+    private let coreStorage: CoreStorage
 
     private var autosaveTask: Task<Void, Never>?
     private var suppressAutosave: Bool = false
@@ -34,13 +34,13 @@ final class SettingsViewModel {
     init(
         settingsStore: SettingsStore = .shared,
         launchAtLoginManager: LaunchAtLoginManager = .shared,
-        coreManager: CoreManager = .shared,
-        versionManager: CoreVersionManager = .shared
+        coreOrchestrator: CoreOrchestrator = .shared,
+        coreStorage: CoreStorage = .shared
     ) {
         self.settingsStore = settingsStore
         self.launchAtLoginManager = launchAtLoginManager
-        self.coreManager = coreManager
-        self.versionManager = versionManager
+        self.coreOrchestrator = coreOrchestrator
+        self.coreStorage = coreStorage
     }
 
     func load() async {
@@ -77,7 +77,7 @@ final class SettingsViewModel {
     }
 
     func restartCore() async {
-        await coreManager.restart()
+        await coreOrchestrator.restart()
         await refreshCoreInfo()
     }
 
@@ -185,13 +185,13 @@ final class SettingsViewModel {
 
     private func refreshCoreInfo() async {
         do {
-            coreVersion = (try await versionManager.activeVersion())?.version
+            coreVersion = try await coreStorage.currentVersion() ?? nil
         } catch {
             coreVersion = nil
         }
 
         do {
-            corePath = (try await versionManager.activeBinaryURL())?.path ?? FluxPaths.coreDir().path
+            corePath = (try await coreStorage.currentExecutableURL())?.path ?? FluxPaths.coreDir().path
         } catch {
             corePath = FluxPaths.coreDir().path
         }

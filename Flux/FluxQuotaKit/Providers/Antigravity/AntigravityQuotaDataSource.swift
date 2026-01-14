@@ -12,9 +12,9 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
     private let tokenURL = URL(string: "https://oauth2.googleapis.com/token")
 
     private static let fetchAvailableModelsURLs: [URL] = [
+        "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
         "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
         "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:fetchAvailableModels",
-        "https://cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels",
     ].compactMap(URL.init(string:))
 
     private static let loadCodeAssistURLs: [URL] = [
@@ -32,6 +32,7 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
 
     private var subscriptionCache: [String: SubscriptionSnapshot] = [:]
     private var projectIdCache: [String: AntigravityProjectCacheStore.ProjectCacheEntry] = [:]
+    private var loadedProjectIdCache: [String: String] = [:]
 
     init(
         httpClient: HTTPClient = .shared,
@@ -48,9 +49,27 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
     func beginRefreshCycle() async {
         subscriptionCache = [:]
         projectIdCache = await cacheStore.load()
+        loadedProjectIdCache = projectIdCache.mapValues(\.projectId)
     }
 
     func finishRefreshCycle() async {
+        let current = projectIdCache.mapValues(\.projectId)
+        guard current != loadedProjectIdCache else {
+            await logger.log(
+                .debug,
+                category: LogCategories.quotaAntigravity,
+                metadata: ["entries": .int(current.count)],
+                message: "Project cache unchanged, skipping save"
+            )
+            return
+        }
+
+        await logger.log(
+            .debug,
+            category: LogCategories.quotaAntigravity,
+            metadata: ["entries": .int(current.count)],
+            message: "Project cache updated, saving..."
+        )
         await cacheStore.save(projectIdCache)
     }
 
@@ -372,7 +391,6 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
 
     private func buildPayload(from response: FetchAvailableModelsResponse, plan: String?, now: Date) -> QuotaPayload {
         var windows: [QuotaWindow] = []
-        windows.reserveCapacity(response.models.count + 1)
 
         var overallRemaining: Double?
         var overallResetAt: Date?
@@ -380,12 +398,13 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
 
+        var models: [AntigravityModelSnapshot] = []
+        models.reserveCapacity(response.models.count)
+
         for (modelId, info) in response.models.sorted(by: { $0.key < $1.key }) {
             guard let quota = info.quotaInfo else { continue }
 
             let remainingFraction = quota.remainingFraction ?? 0
-            let remainingPercent = max(0, min(100, remainingFraction * 100))
-            let usedPercent = max(0, 100 - remainingPercent)
 
             let resetAt: Date? = {
                 guard let reset = quota.resetTime.nonEmpty else { return nil }
@@ -399,16 +418,12 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
                 overallResetAt = min(overallResetAt ?? resetAt, resetAt)
             }
 
-            windows.append(
-                QuotaWindow(
-                    id: "antigravity.\(modelId)",
-                    label: modelId,
-                    unit: .percent,
-                    usedPercent: usedPercent,
-                    remainingPercent: remainingPercent,
-                    used: nil,
-                    limit: nil,
-                    remaining: nil,
+            models.append(
+                AntigravityModelSnapshot(
+                    modelId: modelId,
+                    displayName: info.displayName.nonEmpty,
+                    remainingFraction: remainingFraction,
+                    resetTime: quota.resetTime.nonEmpty,
                     resetAt: resetAt
                 )
             )
@@ -416,7 +431,7 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
 
         if let overallRemaining {
             let remainingPercent = max(0, min(100, overallRemaining * 100))
-            windows.insert(
+            windows.append(
                 QuotaWindow(
                     id: "antigravity.overall",
                     label: "Overall",
@@ -428,7 +443,26 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
                     remaining: nil,
                     resetAt: overallResetAt
                 ),
-                at: 0
+            )
+        }
+
+        let groups = buildQuotaGroups(from: models)
+        windows.reserveCapacity(windows.count + groups.count)
+
+        for group in groups {
+            let remainingPercent = max(0, min(100, group.remainingFraction * 100))
+            windows.append(
+                QuotaWindow(
+                    id: "antigravity.group.\(group.groupId)",
+                    label: group.label,
+                    unit: .percent,
+                    usedPercent: max(0, 100 - remainingPercent),
+                    remainingPercent: remainingPercent,
+                    used: nil,
+                    limit: nil,
+                    remaining: nil,
+                    resetAt: group.resetAt
+                )
             )
         }
 
@@ -514,6 +548,152 @@ actor AntigravityQuotaDataSource: QuotaDataSource {
         }.joined(separator: "&")
         return Data(encoded.utf8)
     }
+
+    private struct AntigravityModelSnapshot: Sendable {
+        let modelId: String
+        let displayName: String?
+        let remainingFraction: Double
+        let resetTime: String?
+        let resetAt: Date?
+    }
+
+    private struct AntigravityQuotaGroupSnapshot: Sendable {
+        let groupId: String
+        let label: String
+        let remainingFraction: Double
+        let resetAt: Date?
+        let sortKey: String
+    }
+
+    private func buildQuotaGroups(from models: [AntigravityModelSnapshot]) -> [AntigravityQuotaGroupSnapshot] {
+        guard models.isEmpty == false else { return [] }
+
+        let fingerprintGroups = Dictionary(grouping: models, by: quotaFingerprint(for:))
+        let groupedModels: [String: [AntigravityModelSnapshot]]
+
+        if fingerprintGroups.count == 1, models.count > 1 {
+            groupedModels = Dictionary(grouping: models, by: fallbackGroupKey(for:))
+        } else {
+            groupedModels = fingerprintGroups
+        }
+
+        var groups: [AntigravityQuotaGroupSnapshot] = []
+        groups.reserveCapacity(groupedModels.count)
+
+        for (_, entries) in groupedModels {
+            let modelIds = entries.map(\.modelId).sorted()
+            guard let sortKey = modelIds.first else { continue }
+            let groupId = modelIds.joined(separator: "_")
+
+            let remainingFraction = entries.map(\.remainingFraction).min() ?? 0
+            let resetAt = entries.compactMap(\.resetAt).min()
+
+            let label = quotaGroupLabel(modelIds: modelIds, entries: entries)
+
+            groups.append(
+                AntigravityQuotaGroupSnapshot(
+                    groupId: groupId,
+                    label: label,
+                    remainingFraction: remainingFraction,
+                    resetAt: resetAt,
+                    sortKey: sortKey
+                )
+            )
+        }
+
+        groups.sort { $0.sortKey < $1.sortKey }
+        return groups
+    }
+
+    private func quotaFingerprint(for model: AntigravityModelSnapshot) -> String {
+        let reset = model.resetTime ?? ""
+        return String(format: "%.6f_%@", locale: Locale(identifier: "en_US_POSIX"), model.remainingFraction, reset)
+    }
+
+    private func fallbackGroupKey(for model: AntigravityModelSnapshot) -> String {
+        let id = model.modelId.lowercased()
+        if id.hasPrefix("gemini-3-pro-") { return "gemini-3-pro" }
+        if id.hasPrefix("gemini-2.5-flash-") || id.hasPrefix("gemini-2-5-flash-") { return "gemini-2.5-flash" }
+        if id.hasPrefix("claude-") { return "claude" }
+        if id.hasPrefix("gpt-") { return "gpt" }
+        return model.modelId
+    }
+
+    private func quotaGroupLabel(modelIds: [String], entries: [AntigravityModelSnapshot]) -> String {
+        if entries.count == 1 {
+            return entries[0].displayName ?? entries[0].modelId
+        }
+
+        if let prefix = commonDisplayNamePrefix(entries.compactMap(\.displayName)) {
+            return prefix
+        }
+
+        let lowered = modelIds.map { $0.lowercased() }
+        let hasClaude = lowered.contains { $0.hasPrefix("claude-") }
+        let hasGPT = lowered.contains { $0.hasPrefix("gpt-") }
+        if hasClaude, hasGPT {
+            return "Claude/GPT"
+        }
+
+        if let prefix = commonModelIdPrefix(modelIds) {
+            return humanizeModelId(prefix)
+        }
+
+        return modelIds.first ?? "Unknown"
+    }
+
+    private func commonDisplayNamePrefix(_ names: [String]) -> String? {
+        let trimmed = names.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard trimmed.isEmpty == false else { return nil }
+        if trimmed.count == 1 { return trimmed[0] }
+
+        let tokenized = trimmed.map { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
+        guard let first = tokenized.first else { return nil }
+
+        var commonCount = 0
+        for index in 0..<first.count {
+            let token = first[index]
+            if token.contains("(") { break }
+            if tokenized.dropFirst().allSatisfy({ $0.count > index && $0[index] == token }) {
+                commonCount += 1
+            } else {
+                break
+            }
+        }
+
+        let prefix = first.prefix(commonCount).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+        return prefix.isEmpty ? nil : prefix
+    }
+
+    private func commonModelIdPrefix(_ ids: [String]) -> String? {
+        let parts = ids.map { $0.split(separator: "-").map(String.init) }
+        guard let first = parts.first, first.isEmpty == false else { return nil }
+
+        var commonCount = 0
+        for index in 0..<first.count {
+            let token = first[index]
+            if parts.dropFirst().allSatisfy({ $0.count > index && $0[index] == token }) {
+                commonCount += 1
+            } else {
+                break
+            }
+        }
+
+        let prefix = first.prefix(commonCount).joined(separator: "-")
+        return prefix.isEmpty ? nil : prefix
+    }
+
+    private func humanizeModelId(_ prefix: String) -> String {
+        let tokens = prefix.split(separator: "-").map(String.init)
+        let normalized: [String] = tokens.map { token in
+            if token.lowercased() == "gemini" { return "Gemini" }
+            if token.lowercased() == "claude" { return "Claude" }
+            if token.lowercased() == "gpt" { return "GPT" }
+            if token.contains(".") || token.rangeOfCharacter(from: .decimalDigits) != nil { return token }
+            return token.prefix(1).uppercased() + token.dropFirst()
+        }
+        return normalized.joined(separator: " ")
+    }
 }
 
 private struct GoogleTokenRefreshResponse: Decodable {
@@ -573,16 +753,21 @@ private struct FetchAvailableModelsResponse: Decodable, Sendable {
 
     struct ModelInfo: Decodable, Sendable {
         let quotaInfo: QuotaInfo?
+        let displayName: String?
 
         enum CodingKeys: String, CodingKey {
             case quotaInfo
             case quota_info
+            case displayName
+            case display_name
         }
 
         init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             quotaInfo = (try? container.decode(QuotaInfo.self, forKey: .quotaInfo))
                 ?? (try? container.decode(QuotaInfo.self, forKey: .quota_info))
+            displayName = (try? container.decode(String.self, forKey: .displayName))
+                ?? (try? container.decode(String.self, forKey: .display_name))
         }
     }
 

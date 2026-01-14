@@ -21,12 +21,12 @@ final class LogsViewModel {
         Array(entries.reversed())
     }
 
-    private let coreManager: CoreManager
+    private let coreOrchestrator: CoreOrchestrator
     private let fluxLogger: FluxLogger
     nonisolated(unsafe) private var streamTask: Task<Void, Never>?
 
-    init(coreManager: CoreManager = .shared, fluxLogger: FluxLogger = .shared) {
-        self.coreManager = coreManager
+    init(coreOrchestrator: CoreOrchestrator = .shared, fluxLogger: FluxLogger = .shared) {
+        self.coreOrchestrator = coreOrchestrator
         self.fluxLogger = fluxLogger
     }
 
@@ -36,6 +36,10 @@ final class LogsViewModel {
 
     func load() async {
         await applySource(source)
+    }
+
+    func deactivate() {
+        stopStream()
     }
 
     func applySource(_ source: LogsSource) async {
@@ -67,7 +71,7 @@ final class LogsViewModel {
     }
 
     func startCore() async {
-        await coreManager.start()
+        await coreOrchestrator.start()
         await refreshCoreLogs()
     }
 
@@ -83,10 +87,10 @@ final class LogsViewModel {
             await fluxLogger.clearAppLogs()
             entries = []
         case .core:
-            coreState = await coreManager.state()
+            coreState = await coreOrchestrator.runtimeState()
             guard coreState.isRunning else { return }
             do {
-                let logURL = await coreManager.logFileURL()
+                guard let logURL = await coreOrchestrator.logFileURL() else { return }
                 try await fluxLogger.clearLogFile(at: logURL)
                 entries = []
             } catch {
@@ -121,14 +125,17 @@ final class LogsViewModel {
     }
 
     private func refreshCoreLogs() async {
-        coreState = await coreManager.state()
+        coreState = await coreOrchestrator.runtimeState()
         guard coreState.isRunning else {
             entries = []
             return
         }
 
         do {
-            let logURL = await coreManager.logFileURL()
+            guard let logURL = await coreOrchestrator.logFileURL() else {
+                entries = []
+                return
+            }
             let text = try await fluxLogger.readLogFile(at: logURL)
             let parsed = await Task.detached(priority: .userInitiated) {
                 LogEntryParser.parse(text: text, category: LogCategories.core)

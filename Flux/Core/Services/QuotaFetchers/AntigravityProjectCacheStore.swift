@@ -3,7 +3,7 @@ import Foundation
 actor AntigravityProjectCacheStore {
     static let shared = AntigravityProjectCacheStore()
 
-    private static let cacheFileURL: URL = {
+    private static let legacyCacheFileURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
             .appendingPathComponent("Library", isDirectory: true)
@@ -30,9 +30,12 @@ actor AntigravityProjectCacheStore {
     }
 
     func load() async -> [String: ProjectCacheEntry] {
-        let url = Self.cacheFileURL
+        let url = FluxPaths.antigravityProjectCacheURL()
+        let legacyURL = Self.legacyCacheFileURL
 
-        guard let data = FileManager.default.contents(atPath: url.path) else {
+        let data = FileManager.default.contents(atPath: url.path)
+            ?? FileManager.default.contents(atPath: legacyURL.path)
+        guard let data else {
             return [:]
         }
 
@@ -47,7 +50,7 @@ actor AntigravityProjectCacheStore {
     }
 
     func save(_ cache: [String: ProjectCacheEntry]) async {
-        let url = Self.cacheFileURL
+        let url = FluxPaths.antigravityProjectCacheURL()
 
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

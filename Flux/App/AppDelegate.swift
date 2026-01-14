@@ -3,15 +3,16 @@ import Cocoa
 @MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuBarController: MenuBarController?
+    private var terminationInProgress = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         menuBarController = MenuBarController()
-        NSApp.setActivationPolicy(.accessory)
+        WindowPolicyManager.shared.configure(showInDock: false)
 
         Task {
             let settings = (try? await SettingsStore.shared.load()) ?? .default
             LanguageManager.shared.setLanguage(settings.language)
-            NSApp.setActivationPolicy(settings.showInDock ? .regular : .accessory)
+            WindowPolicyManager.shared.configure(showInDock: settings.showInDock)
             await FluxLogger.shared.updateConfig(settings.logConfig)
             await UpdateService.shared.applySettings(settings)
             await QuotaRefreshScheduler.shared.start(intervalSeconds: settings.refreshIntervalSeconds)
@@ -27,14 +28,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if flag == false {
-            if let window = sender.windows.first(where: { $0.title == "Flux" }) {
-                if window.isMiniaturized {
-                    window.deminiaturize(nil)
-                }
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
+            WindowPolicyManager.shared.openMainWindow()
         }
         return true
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        let forcedQuit = WindowPolicyManager.shared.consumeForceQuitRequested()
+        if !forcedQuit, WindowPolicyManager.shared.isMainWindowVisible() {
+            // Cmd+Q behavior: hide the main window, keep running in menu bar.
+            WindowPolicyManager.shared.hideMainWindow()
+            return .terminateCancel
+        }
+
+        guard !terminationInProgress else { return .terminateLater }
+        terminationInProgress = true
+
+        // Immediate user feedback: hide windows right away.
+        for window in sender.windows {
+            window.orderOut(nil)
+        }
+        sender.hide(nil)
+
+        // Stop core asynchronously, then allow termination.
+        Task {
+            await CoreOrchestrator.shared.stop()
+            await MainActor.run {
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+        }
+
+        return .terminateLater
     }
 }

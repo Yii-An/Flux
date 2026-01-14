@@ -1,9 +1,13 @@
 import SwiftUI
 
 struct QuotaView: View {
-    @State private var viewModel = QuotaViewModel()
+    let viewModel: QuotaViewModel
     @State private var selectedProvider: ProviderID = .codex
     @State private var isProgrammaticScroll = false
+
+    init(viewModel: QuotaViewModel = QuotaViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -38,9 +42,15 @@ struct QuotaView: View {
                                     ProviderSectionContent(
                                         provider: provider,
                                         providerSnapshot: viewModel.providerSnapshots[provider],
-                                        isRefreshing: viewModel.isRefreshingAll || viewModel.refreshingProviders.contains(provider),
-                                        onRefresh: {
+                                        isRefreshingProvider: viewModel.isRefreshingAll || viewModel.refreshingProviders.contains(provider),
+                                        onRefreshProvider: {
                                             Task { await viewModel.refreshProvider(provider, force: true) }
+                                        },
+                                        onRefreshAccount: { accountKey in
+                                            Task { await viewModel.refreshAccount(provider, accountKey: accountKey) }
+                                        },
+                                        isRefreshingAccount: { accountKey in
+                                            viewModel.isRefreshingAccount(provider, accountKey)
                                         }
                                     )
                                     .padding(.horizontal, UITokens.Spacing.lg)
@@ -299,8 +309,10 @@ private struct ProviderStats: Hashable, Sendable {
 private struct ProviderSectionContent: View {
     let provider: ProviderID
     let providerSnapshot: ProviderQuotaSnapshot?
-    let isRefreshing: Bool
-    let onRefresh: () -> Void
+    let isRefreshingProvider: Bool
+    let onRefreshProvider: () -> Void
+    let onRefreshAccount: (String) -> Void
+    let isRefreshingAccount: (String) -> Bool
 
     var body: some View {
         let accounts = sortedAccounts
@@ -309,7 +321,12 @@ private struct ProviderSectionContent: View {
         } else {
             VStack(spacing: UITokens.Spacing.md) {
                 ForEach(accounts) { account in
-                    AccountBentoCard(provider: provider, account: account, isRefreshing: isRefreshing, onRefresh: onRefresh)
+                    AccountBentoCard(
+                        provider: provider,
+                        account: account,
+                        isRefreshing: isRefreshingProvider || isRefreshingAccount(account.accountKey),
+                        onRefresh: { onRefreshAccount(account.accountKey) }
+                    )
                 }
             }
         }

@@ -2,7 +2,11 @@ import AppKit
 import SwiftUI
 
 struct DashboardView: View {
-    @State private var viewModel = DashboardViewModel()
+    let viewModel: DashboardViewModel
+
+    init(viewModel: DashboardViewModel = DashboardViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         ScrollView(.vertical) {

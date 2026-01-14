@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct MenuBarPopoverView: View {
+    @Environment(\.openWindow) private var openWindow
     @State private var viewModel: MenuBarViewModel
     @State private var languageManager = LanguageManager.shared
 
@@ -38,6 +39,7 @@ struct MenuBarPopoverView: View {
         .background(.regularMaterial)
         .environment(\.locale, languageManager.locale)
         .task {
+            await WindowPolicyManager.shared.registerOpenWindow(openWindow)
             await viewModel.load()
         }
     }
@@ -85,4 +87,3 @@ struct MenuBarPopoverView: View {
         }
     }
 }
-

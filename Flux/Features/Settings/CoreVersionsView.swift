@@ -73,7 +73,7 @@ struct CoreVersionsView: View {
     }
 
     @ViewBuilder
-    private func installedCard(for version: CoreVersion) -> some View {
+    private func installedCard(for version: InstalledCoreVersion) -> some View {
         VStack(alignment: .leading, spacing: UITokens.Spacing.sm) {
             HStack {
                 Text(version.version)
@@ -81,12 +81,12 @@ struct CoreVersionsView: View {
 
                 Spacer()
 
-                if version.isActive {
+                if version.isCurrent {
                     StatusBadge(text: "Active".localizedStatic(), status: .success)
                 }
             }
 
-            Text(version.path.path)
+            Text(version.executableURL.path)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
@@ -100,7 +100,7 @@ struct CoreVersionsView: View {
 
                 Spacer()
 
-                if !version.isActive {
+                if !version.isCurrent {
                     Button {
                         Task { await viewModel.activateVersion(version) }
                     } label: {
@@ -116,10 +116,10 @@ struct CoreVersionsView: View {
     }
 
     @ViewBuilder
-    private func availableCard(for release: CoreDownloader.Release) -> some View {
+    private func availableCard(for release: CoreRelease) -> some View {
         VStack(alignment: .leading, spacing: UITokens.Spacing.sm) {
             HStack {
-                Text(release.name.isEmpty ? release.tagName : release.name)
+                Text((release.name?.isEmpty == false) ? (release.name ?? "") : release.tagName)
                     .font(.headline)
 
                 Spacer()
@@ -129,9 +129,15 @@ struct CoreVersionsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Text(release.publishedAt, style: .date)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            if let publishedAt = release.publishedAt {
+                Text(publishedAt, style: .date)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Unknown".localizedStatic())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
             if viewModel.downloadingVersion == release.tagName {
                 ProgressView(value: viewModel.downloadProgress)

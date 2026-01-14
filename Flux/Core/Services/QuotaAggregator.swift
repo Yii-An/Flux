@@ -9,10 +9,12 @@ actor QuotaAggregator {
     private var cache: [ProviderID: [String: AccountQuota]] = [:]
     private var lastRefresh: Date?
     private var lastProviderRefresh: [ProviderID: Date] = [:]
+    private var lastAccountRefresh: [ProviderID: [String: Date]] = [:]
 
     private var refreshIntervalSeconds: Int = 60
 
     private let minProviderRefreshInterval: TimeInterval = 30
+    private let minAccountRefreshInterval: TimeInterval = 5
     private let quotaEngine: QuotaEngine
 
     init(
@@ -77,6 +79,35 @@ actor QuotaAggregator {
         apply(providerReport: providerReport, now: now)
         lastProviderRefresh[provider] = now
         return cache[provider] ?? [:]
+    }
+
+    func refreshAccount(provider: ProviderID, accountKey: String, force: Bool = false) async -> AccountQuota? {
+        await loadCachedIfNeeded()
+
+        let now = Date()
+
+        if provider.descriptor.supportsQuota == false {
+            cache[provider] = [:]
+            lastProviderRefresh[provider] = now
+            return nil
+        }
+
+        if let last = lastAccountRefresh[provider]?[accountKey],
+           now.timeIntervalSince(last) < minAccountRefreshInterval {
+            return cache[provider]?[accountKey]
+        }
+
+        guard let kind = mapProviderKind(provider) else { return nil }
+
+        let report = await quotaEngine.refreshAccount(provider: kind, accountKey: accountKey, force: force)
+        let mapped = mapAccountQuota(report)
+
+        cache[provider, default: [:]][accountKey] = mapped
+
+        lastAccountRefresh[provider, default: [:]][accountKey] = report.fetchedAt
+        lastProviderRefresh[provider] = report.fetchedAt
+
+        return mapped
     }
 
     func refresh(provider: ProviderID, force: Bool = false) async -> QuotaSnapshot {

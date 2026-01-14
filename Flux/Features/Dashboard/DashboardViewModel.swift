@@ -34,18 +34,21 @@ final class DashboardViewModel {
 
     private let authFileReader: AuthFileReader
     private let quotaAggregator: QuotaAggregator
-    private let coreManager: CoreManager
+    private let coreOrchestrator: CoreOrchestrator
+    private let coreReleaseService: CoreReleaseService
     private let agentDiscoveryService: AgentDiscoveryService
 
     init(
         authFileReader: AuthFileReader = .shared,
         quotaAggregator: QuotaAggregator = .shared,
-        coreManager: CoreManager = .shared,
+        coreOrchestrator: CoreOrchestrator = .shared,
+        coreReleaseService: CoreReleaseService = .shared,
         agentDiscoveryService: AgentDiscoveryService = .shared
     ) {
         self.authFileReader = authFileReader
         self.quotaAggregator = quotaAggregator
-        self.coreManager = coreManager
+        self.coreOrchestrator = coreOrchestrator
+        self.coreReleaseService = coreReleaseService
         self.agentDiscoveryService = agentDiscoveryService
     }
 
@@ -217,22 +220,32 @@ final class DashboardViewModel {
     func toggleCore() async {
         await refreshCoreMetadata()
         if coreState.isRunning {
-            await coreManager.stop()
+            await coreOrchestrator.stop()
         } else {
-            await coreManager.start()
+            await coreOrchestrator.start()
         }
         await refreshCoreMetadata()
     }
 
     private func refreshCoreMetadata() async {
-        coreState = await coreManager.state()
-        coreStartedAt = await coreManager.startedAtDate()
-        coreVersion = (try? await CoreVersionManager.shared.activeVersion())?.version
-        corePort = await coreManager.port()
+        coreState = await coreOrchestrator.runtimeState()
+
+        let lifecycle = await coreOrchestrator.currentState()
+        if case let .running(activeVersion, _, port, startedAt) = lifecycle {
+            coreVersion = activeVersion
+            coreStartedAt = startedAt
+            corePort = port
+        } else {
+            if let stored = try? await CoreStorage.shared.currentVersion() {
+                coreVersion = stored
+            }
+            coreStartedAt = nil
+            corePort = 8080
+        }
     }
 
     private func refreshCorePromptState() async {
-        let binaryURL = try? await CoreVersionManager.shared.activeBinaryURL()
+        let binaryURL = try? await CoreStorage.shared.currentExecutableURL()
         if binaryURL == nil {
             coreNotInstalled = true
         } else if case .notInstalled = coreState {
@@ -248,17 +261,11 @@ final class DashboardViewModel {
         }
 
         do {
-            let releases = try await CoreDownloader.shared.fetchAvailableReleases()
-            guard let latest = releases.max(by: { $0.publishedAt < $1.publishedAt }) else {
-                coreLatestVersion = nil
-                coreUpdateAvailable = false
-                return
-            }
-
+            let latest = try await coreReleaseService.fetchLatest(policy: .returnCacheElseLoad)
             coreLatestVersion = latest.tagName
 
             if let current = coreVersion, !current.isEmpty, current != "custom" {
-                coreUpdateAvailable = (current != latest.tagName)
+                coreUpdateAvailable = (normalizeTag(current) != latest.tagName)
             } else {
                 coreUpdateAvailable = false
             }
@@ -266,6 +273,12 @@ final class DashboardViewModel {
             coreLatestVersion = nil
             coreUpdateAvailable = false
         }
+    }
+
+    private func normalizeTag(_ versionOrTag: String) -> String {
+        let trimmed = versionOrTag.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("v") { return trimmed }
+        return "v\(trimmed)"
     }
 
     private func trend(for value: Int, comparedTo previous: Int) -> MetricTrend {

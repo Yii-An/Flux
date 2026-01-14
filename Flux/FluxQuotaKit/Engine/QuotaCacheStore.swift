@@ -7,18 +7,22 @@ actor QuotaCacheStore {
         self.logger = logger
     }
 
-    private static let cacheURL: URL = {
+    private static let legacyCacheURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         return home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Application Support", isDirectory: true)
             .appendingPathComponent("Flux", isDirectory: true)
-            .appendingPathComponent("quota_cache_v3.json", isDirectory: false)
+            .appendingPathComponent("quota_cache.json", isDirectory: false)
     }()
 
     func load() async -> QuotaReport? {
-        let url = Self.cacheURL
-        guard let data = FileManager.default.contents(atPath: url.path), data.isEmpty == false else { return nil }
+        let url = FluxPaths.quotaCacheURL()
+        let legacyURL = Self.legacyCacheURL
+
+        let data = FileManager.default.contents(atPath: url.path)
+            ?? FileManager.default.contents(atPath: legacyURL.path)
+        guard let data, data.isEmpty == false else { return nil }
 
         do {
             let decoder = JSONDecoder()
@@ -36,7 +40,7 @@ actor QuotaCacheStore {
     }
 
     func save(_ report: QuotaReport) async {
-        let url = Self.cacheURL
+        let url = FluxPaths.quotaCacheURL()
         do {
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
 
@@ -57,4 +61,3 @@ actor QuotaCacheStore {
         }
     }
 }
-

@@ -1,8 +1,12 @@
 import SwiftUI
 
 struct ProvidersView: View {
-    @State private var viewModel = ProvidersViewModel()
+    let viewModel: ProvidersViewModel
     @State private var isShowingAddPlaceholder = false
+
+    init(viewModel: ProvidersViewModel = ProvidersViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         List {

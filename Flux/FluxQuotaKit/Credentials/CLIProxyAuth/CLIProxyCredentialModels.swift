@@ -89,8 +89,8 @@ enum CLIProxyAuthFileReader {
                 filePath: file.path,
                 metadata: [
                     "project_id": gemini.projectId.nonEmpty ?? "",
-                    "client_id": gemini.clientId.nonEmpty ?? "",
-                    "client_secret": gemini.clientSecret.nonEmpty ?? "",
+                    "client_id": gemini.resolvedClientId().nonEmpty ?? "",
+                    "client_secret": gemini.resolvedClientSecret().nonEmpty ?? "",
                 ].filter { !$0.value.isEmpty }
             )
         }
@@ -203,6 +203,14 @@ private struct GeminiAuthFile: Decodable {
         token?.refreshToken ?? token?.refreshTokenAlt
     }
 
+    func resolvedClientId() -> String? {
+        token?.clientId ?? clientId
+    }
+
+    func resolvedClientSecret() -> String? {
+        token?.clientSecret ?? clientSecret
+    }
+
     func resolvedExpiryDate() -> Date? {
         token?.expiryDate
     }
@@ -212,6 +220,8 @@ private struct GeminiTokenObject: Decodable {
     let accessToken: String?
     let refreshToken: String?
     let tokenType: String?
+    let clientId: String?
+    let clientSecret: String?
     let expiry: Date?
     let expiryDateMs: Double?
 
@@ -229,6 +239,8 @@ private struct GeminiTokenObject: Decodable {
         case accessToken = "access_token"
         case refreshToken = "refresh_token"
         case tokenType = "token_type"
+        case clientId = "client_id"
+        case clientSecret = "client_secret"
         case expiry
         case expiryDateMs = "expiry_date"
         case accessTokenAlt = "AccessToken"
@@ -241,6 +253,8 @@ private struct GeminiTokenObject: Decodable {
         accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
         refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
         tokenType = try container.decodeIfPresent(String.self, forKey: .tokenType)
+        clientId = try container.decodeIfPresent(String.self, forKey: .clientId)
+        clientSecret = try container.decodeIfPresent(String.self, forKey: .clientSecret)
 
         // expiry can be RFC3339, ISO8601, or missing.
         if let expiryString = try container.decodeIfPresent(String.self, forKey: .expiry),

@@ -1,8 +1,12 @@
 import SwiftUI
 
 struct APIKeysView: View {
-    @State private var viewModel = APIKeysViewModel()
+    let viewModel: APIKeysViewModel
     @State private var drafts: [ProviderID: String] = [:]
+
+    init(viewModel: APIKeysViewModel = APIKeysViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         List {

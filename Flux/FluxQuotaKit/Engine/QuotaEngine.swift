@@ -16,6 +16,7 @@ actor QuotaEngine {
     private let codexDataSource: CodexQuotaDataSource
     private let geminiCLIDataSource: GeminiCLIQuotaDataSource
     private let antigravityDataSource: AntigravityQuotaDataSource
+    private let antigravityRefreshLock = AsyncLock(name: "quota.refresh.antigravity")
 
     private struct BackoffState: Sendable {
         var failures: Int
@@ -99,7 +100,162 @@ actor QuotaEngine {
         }
     }
 
+    func refreshAccount(provider: ProviderKind, accountKey: String, force: Bool = false) async -> AccountQuotaReport {
+        startWatchingAuthDirIfNeeded()
+
+        let credentials = CLIProxyAuthFileReader.listCredentials()
+        guard let credential = credentials.first(where: { $0.provider == provider && $0.accountKey == accountKey }) else {
+            return AccountQuotaReport(
+                provider: provider,
+                accountKey: accountKey,
+                email: nil,
+                plan: nil,
+                status: .authMissing,
+                source: .oauthApi,
+                fetchedAt: Date(),
+                windows: [],
+                errorMessage: "Auth file not found"
+            )
+        }
+
+        let now = Date()
+        if force == false, isBackedOff(provider: provider, now: now) {
+            return cachedAccountReport(provider: provider, accountKey: accountKey, credential: credential, now: now)
+        }
+
+        let dedupeKey = "quota.refresh.\(provider.rawValue).\(accountKey)"
+
+        let dataSource = dataSource(for: provider)
+        let antigravity = antigravityDataSource
+        let antigravityLock = antigravityRefreshLock
+
+        do {
+            return try await inFlight.run(key: dedupeKey) {
+                if provider == .antigravity {
+                    return await antigravityLock.withLock {
+                        let now = Date()
+                        await antigravity.beginRefreshCycle()
+
+                        let report: AccountQuotaReport
+                        do {
+                            report = try await dataSource.fetchQuota(for: credential)
+                        } catch let error as FluxError {
+                            let status: FluxQuotaStatus = error.code == .authError ? .authMissing : .error
+                            report = AccountQuotaReport(
+                                provider: provider,
+                                accountKey: accountKey,
+                                email: credential.email,
+                                plan: nil,
+                                status: status,
+                                source: .oauthApi,
+                                fetchedAt: now,
+                                windows: [],
+                                errorMessage: error.message
+                            )
+                        } catch {
+                            report = AccountQuotaReport(
+                                provider: provider,
+                                accountKey: accountKey,
+                                email: credential.email,
+                                plan: nil,
+                                status: .error,
+                                source: .oauthApi,
+                                fetchedAt: now,
+                                windows: [],
+                                errorMessage: "\(provider.displayName) quota fetch failed"
+                            )
+                        }
+
+                        await antigravity.finishRefreshCycle()
+                        return report
+                    }
+                }
+
+                let now = Date()
+                do {
+                    return try await dataSource.fetchQuota(for: credential)
+                } catch let error as FluxError {
+                    let status: FluxQuotaStatus = error.code == .authError ? .authMissing : .error
+                    return AccountQuotaReport(
+                        provider: provider,
+                        accountKey: accountKey,
+                        email: credential.email,
+                        plan: nil,
+                        status: status,
+                        source: .oauthApi,
+                        fetchedAt: now,
+                        windows: [],
+                        errorMessage: error.message
+                    )
+                } catch {
+                    return AccountQuotaReport(
+                        provider: provider,
+                        accountKey: accountKey,
+                        email: credential.email,
+                        plan: nil,
+                        status: .error,
+                        source: .oauthApi,
+                        fetchedAt: now,
+                        windows: [],
+                        errorMessage: "\(provider.displayName) quota fetch failed"
+                    )
+                }
+            }
+        } catch {
+            return AccountQuotaReport(
+                provider: provider,
+                accountKey: accountKey,
+                email: credential.email,
+                plan: nil,
+                status: .error,
+                source: .oauthApi,
+                fetchedAt: Date(),
+                windows: [],
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+
     // MARK: - Internals
+
+    private func dataSource(for provider: ProviderKind) -> any QuotaDataSource {
+        switch provider {
+        case .codex:
+            return codexDataSource
+        case .geminiCLI:
+            return geminiCLIDataSource
+        case .antigravity:
+            return antigravityDataSource
+        }
+    }
+
+    private func cachedAccountReport(
+        provider: ProviderKind,
+        accountKey: String,
+        credential: CLIProxyCredential,
+        now: Date
+    ) -> AccountQuotaReport {
+        guard let cachedProvider = cachedReport?.providers.first(where: { $0.provider == provider }),
+              var cachedAccount = cachedProvider.accounts.first(where: { $0.accountKey == accountKey })
+        else {
+            return AccountQuotaReport(
+                provider: provider,
+                accountKey: accountKey,
+                email: credential.email,
+                plan: nil,
+                status: .stale,
+                source: .oauthApi,
+                fetchedAt: now,
+                windows: [],
+                errorMessage: "Backed off"
+            )
+        }
+
+        if cachedAccount.status == .ok {
+            cachedAccount.status = .stale
+        }
+        return cachedAccount
+    }
 
     private func performRefreshAll(force: Bool) async -> QuotaReport {
         let now = Date()
@@ -242,5 +398,41 @@ actor QuotaEngine {
 
     private func resetBackoff(provider: ProviderKind) {
         providerBackoff[provider] = nil
+    }
+}
+
+private actor AsyncLock {
+    private var isLocked: Bool = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private let name: String
+
+    init(name: String) {
+        self.name = name
+    }
+
+    func withLock<T: Sendable>(_ operation: @escaping @Sendable () async -> T) async -> T {
+        await acquire()
+        let result = await operation()
+        release()
+        return result
+    }
+
+    private func acquire() async {
+        if isLocked {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+            return
+        }
+        isLocked = true
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            isLocked = false
+            return
+        }
+        let next = waiters.removeFirst()
+        next.resume()
     }
 }

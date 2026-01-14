@@ -3,12 +3,18 @@ import AppKit
 import UniformTypeIdentifiers
 
 struct LogsView: View {
-    @State private var viewModel = LogsViewModel()
+    let viewModel: LogsViewModel
     @State private var filterLevel: FluxLogLevel?
     @State private var filterCategory: LogCategory?
     @State private var searchText: String = ""
 
+    init(viewModel: LogsViewModel = LogsViewModel()) {
+        self.viewModel = viewModel
+    }
+
     var body: some View {
+        @Bindable var viewModel = viewModel
+
         VStack(spacing: UITokens.Spacing.md) {
             if let errorMessage = viewModel.errorMessage {
                 Text(errorMessage)
@@ -86,6 +92,7 @@ struct LogsView: View {
             }
         }
         .task { await viewModel.load() }
+        .onDisappear { viewModel.deactivate() }
         .onChange(of: viewModel.source) { _, newValue in
             Task { await viewModel.applySource(newValue) }
         }
@@ -131,8 +138,8 @@ struct LogsView: View {
                         await MainActor.run { viewModel.errorMessage = "Selected file is not executable".localizedStatic() }
                         return
                     }
-                    _ = try await CoreVersionManager.shared.installVersion(from: url, version: "custom", setActive: true)
-                    await CoreManager.shared.start()
+                    _ = try await CoreOrchestrator.shared.installFromFile(fileURL: url, version: "custom", setActive: true)
+                    await CoreOrchestrator.shared.start()
                     await viewModel.refresh()
                 } catch {
                     await MainActor.run { viewModel.errorMessage = error.localizedDescription }

@@ -2,7 +2,11 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @State private var viewModel = SettingsViewModel()
+    let viewModel: SettingsViewModel
+
+    init(viewModel: SettingsViewModel = SettingsViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         @Bindable var viewModel = viewModel
@@ -124,13 +128,16 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("Settings".localizedStatic())
         .onChange(of: viewModel.settings.showInDock) { _, newValue in
-            NSApp.setActivationPolicy(newValue ? .regular : .accessory)
+            WindowPolicyManager.shared.updateShowInDock(newValue)
         }
         .task {
             await viewModel.load()
         }
-        .onReceive(NotificationCenter.default.publisher(for: CoreVersionManager.didChangeNotification)) { _ in
-            Task { await viewModel.refreshCoreStatus() }
+        .task {
+            let stream = await CoreOrchestrator.shared.stateStream()
+            for await _ in stream {
+                await viewModel.refreshCoreStatus()
+            }
         }
     }
 }

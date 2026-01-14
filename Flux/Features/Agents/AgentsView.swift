@@ -1,7 +1,11 @@
 import SwiftUI
 
 struct AgentsView: View {
-    @State private var viewModel = AgentsViewModel()
+    let viewModel: AgentsViewModel
+
+    init(viewModel: AgentsViewModel = AgentsViewModel()) {
+        self.viewModel = viewModel
+    }
 
     var body: some View {
         ScrollView {

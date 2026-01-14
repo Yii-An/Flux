@@ -21,11 +21,11 @@ final class APIKeysViewModel {
     var isRefreshing: Bool = false
     var errorMessage: String?
 
-    private let coreManager: CoreManager
+    private let coreOrchestrator: CoreOrchestrator
     private let keychainStore: KeychainStore
 
-    init(coreManager: CoreManager = .shared, keychainStore: KeychainStore = .shared) {
-        self.coreManager = coreManager
+    init(coreOrchestrator: CoreOrchestrator = .shared, keychainStore: KeychainStore = .shared) {
+        self.coreOrchestrator = coreOrchestrator
         self.keychainStore = keychainStore
     }
 
@@ -39,7 +39,7 @@ final class APIKeysViewModel {
         defer { isRefreshing = false }
 
         errorMessage = nil
-        coreState = await coreManager.state()
+        coreState = await coreOrchestrator.runtimeState()
 
         var statuses: [ProviderID: ProviderKeyStatus] = [:]
         for provider in apiKeyProviders() {
@@ -65,7 +65,7 @@ final class APIKeysViewModel {
     }
 
     func startCore() async {
-        await coreManager.start()
+        await coreOrchestrator.start()
         await refresh()
     }
 

@@ -4,20 +4,26 @@ import Observation
 @Observable
 @MainActor
 final class CoreVersionsViewModel {
-    var installedVersions: [CoreVersion] = []
-    var availableReleases: [CoreDownloader.Release] = []
+    var installedVersions: [InstalledCoreVersion] = []
+    var availableReleases: [CoreRelease] = []
 
     var isLoadingReleases: Bool = false
     var downloadingVersion: String?
     var downloadProgress: Double = 0
     var errorMessage: String?
 
-    private let versionManager: CoreVersionManager
-    private let downloader: CoreDownloader
+    private let orchestrator: CoreOrchestrator
+    private let storage: CoreStorage
+    private let releaseService: CoreReleaseService
 
-    init(versionManager: CoreVersionManager = .shared, downloader: CoreDownloader = .shared) {
-        self.versionManager = versionManager
-        self.downloader = downloader
+    init(
+        orchestrator: CoreOrchestrator = .shared,
+        storage: CoreStorage = .shared,
+        releaseService: CoreReleaseService = .shared
+    ) {
+        self.orchestrator = orchestrator
+        self.storage = storage
+        self.releaseService = releaseService
     }
 
     func load() async {
@@ -28,7 +34,7 @@ final class CoreVersionsViewModel {
     func loadInstalledVersions() async {
         errorMessage = nil
         do {
-            installedVersions = try await versionManager.listInstalledVersions()
+            installedVersions = try await orchestrator.listVersions()
         } catch {
             installedVersions = []
             errorMessage = error.localizedDescription
@@ -42,21 +48,16 @@ final class CoreVersionsViewModel {
 
         errorMessage = nil
         do {
-            availableReleases = try await downloader.fetchAvailableReleases()
+            availableReleases = try await releaseService.fetchReleases(policy: .returnCacheElseLoad)
         } catch {
             availableReleases = []
             errorMessage = error.localizedDescription
         }
     }
 
-    func downloadVersion(_ release: CoreDownloader.Release) async {
+    func downloadVersion(_ release: CoreRelease) async {
         guard downloadingVersion == nil else { return }
         errorMessage = nil
-
-        guard let asset = selectMacOSAsset(from: release) else {
-            errorMessage = "No macOS binary found".localizedStatic()
-            return
-        }
 
         downloadingVersion = release.tagName
         downloadProgress = 0
@@ -66,31 +67,32 @@ final class CoreVersionsViewModel {
         }
 
         do {
-            let tempFile = try await downloader.downloadCore(from: asset) { value in
-                self.downloadProgress = value
+            _ = try await orchestrator.install(version: release.tagName) { [weak self] stage, fraction in
+                guard let self else { return }
+                if stage == "download" {
+                    if let fraction { self.downloadProgress = fraction }
+                } else if self.downloadProgress == 0 {
+                    self.downloadProgress = 0.01
+                }
             }
-
-            _ = try await versionManager.installVersion(from: tempFile, version: release.tagName, setActive: true)
             await loadInstalledVersions()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func activateVersion(_ version: CoreVersion) async {
+    func activateVersion(_ version: InstalledCoreVersion) async {
         errorMessage = nil
         do {
-            try await versionManager.setActiveVersion(version.version)
+            try await storage.setCurrent(version.version)
+
+            let runtime = await orchestrator.runtimeState()
+            if runtime.isRunning {
+                await orchestrator.restart()
+            }
             await loadInstalledVersions()
         } catch {
             errorMessage = error.localizedDescription
-        }
-    }
-
-    private func selectMacOSAsset(from release: CoreDownloader.Release) -> CoreDownloader.Asset? {
-        release.assets.first { asset in
-            let name = asset.name.lowercased()
-            return name.contains("darwin") || name.contains("macos")
         }
     }
 }
