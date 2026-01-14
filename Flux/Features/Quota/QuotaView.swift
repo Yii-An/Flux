@@ -2,7 +2,7 @@ import SwiftUI
 
 struct QuotaView: View {
     @State private var viewModel = QuotaViewModel()
-    @State private var selectedProvider: ProviderID = .claude
+    @State private var selectedProvider: ProviderID = .codex
     @State private var isProgrammaticScroll = false
 
     var body: some View {
@@ -72,7 +72,7 @@ struct QuotaView: View {
             await viewModel.loadCached()
             await viewModel.refreshAll()
 
-            if providers.contains(selectedProvider) == false { selectedProvider = providers.first ?? .claude }
+            if providers.contains(selectedProvider) == false { selectedProvider = providers.first ?? .codex }
         }
         .toolbar {
             Button {

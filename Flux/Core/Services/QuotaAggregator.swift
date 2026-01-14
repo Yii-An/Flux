@@ -1,47 +1,28 @@
 import Foundation
 
 actor QuotaAggregator {
-    static let shared = QuotaAggregator(fetchers: defaultFetchers())
+    static let shared = QuotaAggregator()
 
     private let settingsStore: SettingsStore
-    private let cliProxyAuthScanner: CLIProxyAuthScanner
     private let logger: FluxLogger
-
-    private var fetchersByProvider: [ProviderID: any QuotaFetcher]
 
     private var cache: [ProviderID: [String: AccountQuota]] = [:]
     private var lastRefresh: Date?
     private var lastProviderRefresh: [ProviderID: Date] = [:]
-    private var missingFetcherProviders: Set<ProviderID> = []
 
     private var refreshIntervalSeconds: Int = 60
 
     private let minProviderRefreshInterval: TimeInterval = 30
+    private let quotaEngine: QuotaEngine
 
     init(
         settingsStore: SettingsStore = .shared,
-        cliProxyAuthScanner: CLIProxyAuthScanner = CLIProxyAuthScanner(),
-        fetchers: [any QuotaFetcher] = [],
+        quotaEngine: QuotaEngine = .shared,
         logger: FluxLogger = .shared
     ) {
         self.settingsStore = settingsStore
-        self.cliProxyAuthScanner = cliProxyAuthScanner
-        self.fetchersByProvider = Dictionary(uniqueKeysWithValues: fetchers.map { ($0.providerID, $0) })
+        self.quotaEngine = quotaEngine
         self.logger = logger
-    }
-
-    private static func defaultFetchers() -> [any QuotaFetcher] {
-        [
-            ClaudeQuotaFetcher(),
-            CodexQuotaFetcher(),
-            AntigravityQuotaFetcher(),
-            GeminiCLIQuotaFetcher(),
-            CopilotQuotaFetcher(),
-        ]
-    }
-
-    func setFetchers(_ fetchers: [any QuotaFetcher]) {
-        fetchersByProvider = Dictionary(uniqueKeysWithValues: fetchers.map { ($0.providerID, $0) })
     }
 
     func refreshAll(force: Bool = false) async -> [ProviderID: QuotaSnapshot] {
@@ -49,9 +30,7 @@ actor QuotaAggregator {
 
         let now = Date()
         let supportedProviders = ProviderID.allCases.filter(\.descriptor.supportsQuota)
-        let hasUnloadedSupportedProvider = supportedProviders.contains { provider in
-            cache[provider] == nil && missingFetcherProviders.contains(provider) == false
-        }
+        let hasUnloadedSupportedProvider = supportedProviders.contains { cache[$0] == nil }
 
         if let lastRefresh,
            !cache.isEmpty,
@@ -68,74 +47,13 @@ actor QuotaAggregator {
                 ],
                 message: "refreshAll skipped (cached)"
             )
-            return allSnapshots()
+            return await allSnapshots()
         }
 
-        let authFiles = await cliProxyAuthScanner.scanAuthFiles()
-        if authFiles.isEmpty {
-            await logger.log(.debug, category: LogCategories.quotaAggregator, metadata: ["count": .int(0)], message: "scanAuthFiles")
-        } else {
-            var counts: [AuthFileProvider: Int] = [:]
-            for file in authFiles {
-                counts[file.provider, default: 0] += 1
-            }
-            let summary = counts
-                .sorted(by: { $0.key.rawValue < $1.key.rawValue })
-                .map { "\($0.key.rawValue)=\($0.value)" }
-                .joined(separator: " ")
-            await logger.log(
-                .debug,
-                category: LogCategories.quotaAggregator,
-                metadata: ["count": .int(authFiles.count), "providers": .string(summary)],
-                message: "scanAuthFiles"
-            )
-        }
-
-        let providers = ProviderID.allCases
-        var refreshedProviders: Set<ProviderID> = []
-        var nextCache: [ProviderID: [String: AccountQuota]] = cache
-        var nextMissingFetcherProviders: Set<ProviderID> = missingFetcherProviders
-
-        await withTaskGroup(of: (ProviderID, [String: AccountQuota]?).self) { group in
-            for provider in providers {
-                if provider.descriptor.supportsQuota == false {
-                    refreshedProviders.insert(provider)
-                    nextCache[provider] = [:]
-                    continue
-                }
-
-                if force == false, isRateLimited(provider: provider, now: now), cache[provider] != nil {
-                    continue
-                }
-
-                guard let fetcher = fetchersByProvider[provider] else {
-                    refreshedProviders.insert(provider)
-                    nextMissingFetcherProviders.insert(provider)
-                    continue
-                }
-
-                group.addTask {
-                    let accounts = await fetcher.fetchQuotas(authFiles: authFiles)
-                    return (provider, accounts)
-                }
-            }
-
-            for await (provider, accounts) in group {
-                if let accounts {
-                    nextCache[provider] = accounts
-                }
-                refreshedProviders.insert(provider)
-            }
-        }
-
-        for provider in refreshedProviders {
-            lastProviderRefresh[provider] = now
-        }
-
-        cache = nextCache
-        missingFetcherProviders = nextMissingFetcherProviders
+        let report = await quotaEngine.refreshAll(force: force)
+        apply(report: report, now: now)
         lastRefresh = now
-        return allSnapshots()
+        return await allSnapshots()
     }
 
     func refreshProvider(provider: ProviderID, force: Bool = false) async -> [String: AccountQuota] {
@@ -147,23 +65,18 @@ actor QuotaAggregator {
             return [:]
         }
 
-        if force == false, isRateLimited(provider: provider, now: now), let cached = cache[provider] {
-            return cached
-        }
+        if force == false, isRateLimited(provider: provider, now: now), let cached = cache[provider] { return cached }
 
-        guard let fetcher = fetchersByProvider[provider] else {
-            missingFetcherProviders.insert(provider)
+        guard let kind = mapProviderKind(provider) else {
             cache[provider] = [:]
             lastProviderRefresh[provider] = now
             return [:]
         }
 
-        let authFiles = await cliProxyAuthScanner.scanAuthFiles()
-        let accounts = await fetcher.fetchQuotas(authFiles: authFiles)
-        cache[provider] = accounts
-        missingFetcherProviders.remove(provider)
+        let providerReport = await quotaEngine.refresh(provider: kind, force: force)
+        apply(providerReport: providerReport, now: now)
         lastProviderRefresh[provider] = now
-        return accounts
+        return cache[provider] ?? [:]
     }
 
     func refresh(provider: ProviderID, force: Bool = false) async -> QuotaSnapshot {
@@ -171,12 +84,14 @@ actor QuotaAggregator {
         return snapshot(for: provider, now: Date())
     }
 
-    func getSnapshot(for provider: ProviderID) -> QuotaSnapshot? {
-        guard cache[provider] != nil || missingFetcherProviders.contains(provider) else { return nil }
+    func getSnapshot(for provider: ProviderID) async -> QuotaSnapshot? {
+        await loadCachedIfNeeded()
+        guard cache[provider] != nil else { return nil }
         return snapshot(for: provider, now: Date())
     }
 
-    func allSnapshots() -> [ProviderID: QuotaSnapshot] {
+    func allSnapshots() async -> [ProviderID: QuotaSnapshot] {
+        await loadCachedIfNeeded()
         var results: [ProviderID: QuotaSnapshot] = [:]
         for provider in ProviderID.allCases {
             results[provider] = snapshot(for: provider, now: Date())
@@ -184,7 +99,8 @@ actor QuotaAggregator {
         return results
     }
 
-    func allProviderSnapshots() -> [ProviderID: ProviderQuotaSnapshot] {
+    func allProviderSnapshots() async -> [ProviderID: ProviderQuotaSnapshot] {
+        await loadCachedIfNeeded()
         let now = Date()
         var results: [ProviderID: ProviderQuotaSnapshot] = [:]
         for provider in ProviderID.allCases {
@@ -203,10 +119,6 @@ actor QuotaAggregator {
     private func snapshot(for provider: ProviderID, now: Date) -> QuotaSnapshot {
         if provider.descriptor.supportsQuota == false {
             return QuotaSnapshot(provider: provider, fetchedAt: now, kind: .unsupported, message: "Quota not supported".localizedStatic())
-        }
-
-        if missingFetcherProviders.contains(provider) {
-            return QuotaSnapshot(provider: provider, fetchedAt: now, kind: .unsupported, message: "Quota fetcher not implemented".localizedStatic())
         }
 
         guard let accounts = cache[provider] else {
@@ -237,6 +149,124 @@ actor QuotaAggregator {
         }
 
         return QuotaSnapshot(provider: provider, fetchedAt: now, kind: .ok, message: "\(accounts.count) accounts")
+    }
+
+    private func loadCachedIfNeeded() async {
+        guard cache.isEmpty else { return }
+        if let report = await quotaEngine.loadCachedReport() {
+            apply(report: report, now: Date())
+        }
+    }
+
+    private func apply(report: QuotaReport, now: Date) {
+        for providerReport in report.providers {
+            apply(providerReport: providerReport, now: now)
+        }
+        lastRefresh = report.generatedAt
+    }
+
+    private func apply(providerReport: ProviderQuotaReport, now: Date) {
+        guard let providerID = mapProviderID(providerReport.provider) else { return }
+
+        var accounts: [String: AccountQuota] = [:]
+        for account in providerReport.accounts {
+            let mapped = mapAccountQuota(account)
+            accounts[mapped.accountKey] = mapped
+        }
+
+        cache[providerID] = accounts
+        lastProviderRefresh[providerID] = providerReport.fetchedAt
+    }
+
+    private func mapAccountQuota(_ report: AccountQuotaReport) -> AccountQuota {
+        let kind: QuotaSnapshotKind = switch report.status {
+        case .ok: .ok
+        case .authMissing: .authMissing
+        case .error: .error
+        case .stale: .loading
+        case .loading: .loading
+        }
+
+        let modelQuotas: [ModelQuota] = report.windows.compactMap { window in
+            guard let used = window.usedPercent, let remaining = window.remainingPercent else { return nil }
+            return ModelQuota(
+                modelId: window.id,
+                displayName: window.label,
+                usedPercent: used,
+                remainingPercent: remaining,
+                resetAt: window.resetAt
+            )
+        }
+
+        let metrics: QuotaMetrics? = summarize(modelQuotas)
+
+        let planType = report.plan.flatMap(mapPlanType) ?? .unknown
+
+        return AccountQuota(
+            accountKey: report.accountKey,
+            email: report.email,
+            kind: kind,
+            quota: metrics,
+            lastUpdated: report.fetchedAt,
+            message: report.plan ?? report.email,
+            error: report.errorMessage,
+            planType: planType,
+            modelQuotas: modelQuotas
+        )
+    }
+
+    private func summarize(_ modelQuotas: [ModelQuota]) -> QuotaMetrics? {
+        guard modelQuotas.isEmpty == false else { return nil }
+        let worst = modelQuotas.min(by: { $0.remainingPercent < $1.remainingPercent })
+        guard let worst else { return nil }
+
+        return QuotaMetrics(
+            used: Int(worst.usedPercent.rounded()),
+            limit: 100,
+            remaining: Int(worst.remainingPercent.rounded()),
+            resetAt: worst.resetAt,
+            unit: .credits
+        )
+    }
+
+    private func mapPlanType(_ value: String) -> AccountPlanType {
+        switch normalizePlanType(value) {
+        case "free", "guest":
+            return .free
+        case "plus":
+            return .plus
+        case "pro":
+            return .pro
+        case "team":
+            return .team
+        case "enterprise":
+            return .enterprise
+        default:
+            return .unknown
+        }
+    }
+
+    private func normalizePlanType(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed.lowercased()
+    }
+
+    private func mapProviderID(_ kind: ProviderKind) -> ProviderID? {
+        switch kind {
+        case .antigravity: .antigravity
+        case .codex: .codex
+        case .geminiCLI: .geminiCLI
+        }
+    }
+
+    private func mapProviderKind(_ provider: ProviderID) -> ProviderKind? {
+        switch provider {
+        case .antigravity: .antigravity
+        case .codex: .codex
+        case .geminiCLI: .geminiCLI
+        default: nil
+        }
     }
 
     private func selectMostConstrainedAccount(_ accounts: [AccountQuota]) -> AccountQuota? {

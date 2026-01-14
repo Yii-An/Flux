@@ -2,10 +2,9 @@ import Foundation
 import Observation
 
 enum AuthFileProvider: String, Codable, Sendable {
-    case claude
     case codex
     case antigravity
-    case copilot
+    case geminiCLI
     case unknown
 }
 
@@ -65,14 +64,30 @@ final class CLIProxyAuthScanner: @unchecked Sendable {
         let provider = detectProvider(filename: filename, json: json)
         guard provider != .unknown else { return nil }
 
-        guard let accessToken = firstNonEmptyString(json, keys: ["access_token", "accessToken", "session_key", "oauth_token"]) else {
+        let tokenContainer: [String: Any]? = {
+            if let nested = json["token"] as? [String: Any] { return nested }
+            if let nested = json["oauth"] as? [String: Any] { return nested }
+            return nil
+        }()
+
+        let accessToken =
+            firstNonEmptyString(json, keys: ["access_token", "accessToken", "session_key", "oauth_token"])
+            ?? tokenContainer.flatMap { firstNonEmptyString($0, keys: ["access_token", "accessToken", "oauth_token"]) }
+
+        guard let accessToken else {
             return nil
         }
 
-        let refreshToken = firstNonEmptyString(json, keys: ["refresh_token", "refreshToken"])
-        let email = firstNonEmptyString(json, keys: ["email", "user_email", "account_email", "username", "login"])
+        let refreshToken =
+            firstNonEmptyString(json, keys: ["refresh_token", "refreshToken"])
+            ?? tokenContainer.flatMap { firstNonEmptyString($0, keys: ["refresh_token", "refreshToken"]) }
+
+        let email =
+            firstNonEmptyString(json, keys: ["email", "user_email", "account_email", "username", "login"])
+            ?? tokenContainer.flatMap { firstNonEmptyString($0, keys: ["email"]) }
+
         let accountId = firstNonEmptyString(json, keys: ["account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"])
-        let expiredAt = parseExpiryDate(json)
+        let expiredAt = parseExpiryDate(json) ?? tokenContainer.flatMap(parseExpiryDate)
 
         return AuthFileInfo(
             filename: filename,
@@ -88,16 +103,14 @@ final class CLIProxyAuthScanner: @unchecked Sendable {
 
     private static func detectProvider(filename: String, json: [String: Any]) -> AuthFileProvider {
         let lower = filename.lowercased()
-        if lower.hasPrefix("claude-") { return .claude }
         if lower.hasPrefix("codex-") { return .codex }
-        if lower.hasPrefix("antigravity-") { return .antigravity }
-        if lower.hasPrefix("github-copilot-") { return .copilot }
+        if lower.hasPrefix("antigravity-") || lower == "antigravity.json" { return .antigravity }
+        if lower.hasPrefix("gemini-") { return .geminiCLI }
 
         if let typeValue = firstNonEmptyString(json, keys: ["type", "provider", "providerId", "provider_id", "service", "kind"])?.lowercased() {
-            if typeValue.contains("claude") || typeValue.contains("anthropic") { return .claude }
             if typeValue.contains("codex") || typeValue.contains("openai") { return .codex }
             if typeValue.contains("antigravity") { return .antigravity }
-            if typeValue.contains("copilot") || typeValue.contains("github-copilot") { return .copilot }
+            if typeValue.contains("gemini") { return .geminiCLI }
         }
 
         return .unknown
